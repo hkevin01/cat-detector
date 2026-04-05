@@ -8,7 +8,9 @@ PartOf=graphical-session.target
 Type=simple
 ExecStart=/usr/bin/python3 %h/Projects/cat-detector/cat_detector.py --sound
 Restart=on-failure
-RestartSec=5
+RestartSec=30
+RestartSteps=3
+RestartMaxDelaySec=120
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 StandardOutput=journal
 StandardError=journal
