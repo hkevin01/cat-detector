@@ -2,18 +2,34 @@
 """
 cat-detector: Watches keyboard events for cat-on-keyboard signatures.
 
-Detection algorithm — two independent modes:
+Detection algorithm — three independent modes:
   WALK/BURST (key-down events):
     Sliding 2.5-second window; triggers when unique key count, rate, and
     spatial spread across the keyboard all exceed sensitivity thresholds.
     Humans type rhythmically on the home row; cats scatter keys everywhere.
+    VETO: if backspace, delete, or navigation keys appear in the window,
+    the event is classified as human (cats never press backspace).
 
   HOLD/SIT (autorepeat events, EV_KEY value=2):
     When a cat stands or sits on keys, those keys auto-repeat at kernel
-    rate (~20-30/sec). Triggers when 2+ keys repeat simultaneously OR
-    a single key floods with 15+ repeats in 2 seconds.
+    rate (~20-30/sec). Triggers when 2+ non-navigation keys repeat
+    simultaneously OR one non-navigation key floods 15+ repeats in 2s.
+    Backspace, delete, arrows, and other human navigation/editing keys
+    are excluded — humans hold those all the time; cats never do.
 
-  After either trigger: desktop notification, optional sound/lock, 45-second
+  PAW PRESS (simultaneous key-down events):
+    A cat's paw is wider than a key and lands on several at once. Tracks
+    keys physically held right now; triggers when 3–5+ non-modifier,
+    non-navigation keys are depressed simultaneously. Catches the exact
+    moment a paw touches down, which the other two modes may miss.
+
+  STREAK (same-key repeated rapidly without autorepeat):
+    No English word has the same letter 4+ times in a row (e.g. "ffff").
+    If one non-navigation key appears 4+ key-down events within 1 second,
+    it's classified as a cat pawing at the same spot repeatedly.
+    Backspace and space are excluded (humans use those repetitively).
+
+  After any trigger: desktop notification, optional sound/lock, 45-second
   cooldown to prevent double-firing.
 
 Usage:
@@ -40,21 +56,58 @@ except ImportError:
 # ── tunables ──────────────────────────────────────────────────────────────────
 
 SENSITIVITY = {
-    # Thresholds are intentionally high enough that fast human typing
-    # (home-row concentrated, low spread) does NOT trigger.
-    "low":    {"min_keys": 25, "min_rate": 10.0, "spread": 0.65},
-    "medium": {"min_keys": 18, "min_rate":  7.5, "spread": 0.55},
-    "high":   {"min_keys": 12, "min_rate":  5.0, "spread": 0.40},
+    # Walk/burst thresholds: high enough that fast home-row typing won't fire.
+    # min_paw: simultaneous non-modifier/non-nav keys needed for paw detection.
+    "low":    {"min_keys": 25, "min_rate": 10.0, "spread": 0.65, "min_paw": 5},
+    "medium": {"min_keys": 18, "min_rate":  7.5, "spread": 0.55, "min_paw": 4},
+    "high":   {"min_keys": 12, "min_rate":  5.0, "spread": 0.40, "min_paw": 3},
 }
 
 WINDOW_SECS   = 2.5   # sliding time window for walk/burst detection
 COOLDOWN_SECS = 45    # silence after a detection
+
+# Same-key streak detection — "ffff" is a cat, not a word
+STREAK_WINDOW_SECS = 1.0  # look-back for rapid repeated taps of the same key
+STREAK_MIN_COUNT   = 4    # ≥ this many key-down events for same key in window
 
 # Hold / sit detection — cat standing or sitting on key(s) causes autorepeat
 HOLD_WINDOW_SECS = 2.0   # look-back window for repeat floods
 HOLD_MIN_REPEATS = 15    # single key: ≥ this many repeats in window → cat paw
 HOLD_MULTI_KEYS  = 2     # ≥ this many different keys simultaneously repeating…
 HOLD_MULTI_MIN   = 5     # …each with at least this many repeats → cat sitting
+
+# Keys humans legitimately hold — excluded from hold/sit and walk detection.
+# PawSense insight: "cats have a general disregard for the existence of the
+# Backspace key."  Backspace/delete/arrows in the event stream = human.
+HUMAN_HOLD_KEYS = {
+    14,   # KEY_BACKSPACE  ← strongest human signal; cats never delete
+    15,   # KEY_TAB        (alt+tab window cycling)
+    57,   # KEY_SPACE      (gaming dash/jump, document scroll)
+    102,  # KEY_HOME
+    103,  # KEY_UP
+    104,  # KEY_PAGEUP
+    105,  # KEY_LEFT
+    106,  # KEY_RIGHT
+    107,  # KEY_END
+    108,  # KEY_DOWN
+    109,  # KEY_PAGEDOWN
+    110,  # KEY_INSERT
+    111,  # KEY_DELETE     ← same logic as backspace
+}
+
+# Modifier keys: excluded from simultaneous-paw count.
+# Ctrl+Shift+Alt combos are human; a cat's paw lands on regular character keys.
+MODIFIER_KEYS = {
+    29,   # KEY_LEFTCTRL
+    42,   # KEY_LEFTSHIFT
+    54,   # KEY_RIGHTSHIFT
+    56,   # KEY_LEFTALT
+    58,   # KEY_CAPSLOCK
+    97,   # KEY_RIGHTCTRL
+    100,  # KEY_RIGHTALT
+    125,  # KEY_LEFTMETA
+    126,  # KEY_RIGHTMETA
+}
 
 # Full keyboard spread buckets: left/center/right × top/home/bottom
 # Key codes grouped into 9 spatial zones
@@ -165,18 +218,21 @@ def run(args):
         )
         sys.exit(1)
 
-    # key_times[keycode]      -> deque of key-DOWN timestamps (walk detection)
+    # key_times[keycode]      -> deque of key-DOWN timestamps  (walk detection)
     # key_hold_times[keycode] -> deque of autorepeat timestamps (hold/sit detection)
-    key_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
-    key_hold_times: dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
+    # keys_currently_held     -> set of keycodes physically down right now (paw detection)
+    key_times:           dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
+    key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
+    keys_currently_held: set[int]         = set()
     last_detection = 0.0
 
     log.info(
-        "Cat detector running | sensitivity=%s (keys≥%d, rate≥%.1f/s, spread≥%.0f%%)",
+        "Cat detector running | sensitivity=%s "
+        "(walk: keys≥%d rate≥%.1f/s spread≥%.0f%%) "
+        "(paw: simultaneous≥%d) (hold: repeats≥%d)",
         args.sensitivity,
-        thresh["min_keys"],
-        thresh["min_rate"],
-        thresh["spread"] * 100,
+        thresh["min_keys"], thresh["min_rate"], thresh["spread"] * 100,
+        thresh["min_paw"], HOLD_MIN_REPEATS,
     )
 
     async def watch(dev):
@@ -188,31 +244,95 @@ def run(args):
             now  = time.monotonic()
             code = event.code
 
+            # ── Track physical key state (needed for paw detection) ──────────
+            if ke.keystate == ke.key_up:
+                keys_currently_held.discard(code)
+                continue  # key-up feeds no detector
+
             # ── Hold / sit detection (autorepeat = cat standing on key) ──────
             if ke.keystate == ke.key_hold:
-                key_hold_times[code].append(now)
+                # Humans hold backspace, arrows, space constantly — skip those.
+                if code not in HUMAN_HOLD_KEYS:
+                    key_hold_times[code].append(now)
 
-                hold_cutoff = now - HOLD_WINDOW_SECS
-                active_held = 0
-                max_repeats = 0
-                for htimes in key_hold_times.values():
-                    while htimes and htimes[0] < hold_cutoff:
-                        htimes.popleft()
-                    n = len(htimes)
-                    if n >= HOLD_MULTI_MIN:
-                        active_held += 1
-                    if n > max_repeats:
-                        max_repeats = n
+                    hold_cutoff = now - HOLD_WINDOW_SECS
+                    active_held = 0
+                    max_repeats = 0
+                    for htimes in key_hold_times.values():
+                        while htimes and htimes[0] < hold_cutoff:
+                            htimes.popleft()
+                        n = len(htimes)
+                        if n >= HOLD_MULTI_MIN:
+                            active_held += 1
+                        if n > max_repeats:
+                            max_repeats = n
 
+                    if (
+                        (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
+                        and (now - last_detection) > COOLDOWN_SECS
+                    ):
+                        last_detection = now
+                        msg = random.choice(CAT_MESSAGES)
+                        log.warning(
+                            "CAT DETECTED (sitting/standing)! "
+                            "held_keys=%d max_repeats=%d",
+                            active_held, max_repeats,
+                        )
+                        notify(msg)
+                        if args.sound:
+                            play_meow()
+                        if args.lock:
+                            time.sleep(2)
+                            lock_screen()
+                        key_times.clear()
+                        key_hold_times.clear()
+                        keys_currently_held.clear()
+                continue  # autoreps don't feed walk/paw/streak detectors
+
+            # key_down from here ─────────────────────────────────────────────
+            keys_currently_held.add(code)
+
+            # ── Paw-press detection (simultaneous keys = cat paw landing) ────
+            # A cat's paw is ~3–5 cm wide and depresses several keys at once.
+            # Humans almost never hold 4+ non-modifier character keys simultaneously.
+            paw_keys = keys_currently_held - MODIFIER_KEYS - HUMAN_HOLD_KEYS
+            if (
+                len(paw_keys) >= thresh["min_paw"]
+                and (now - last_detection) > COOLDOWN_SECS
+            ):
+                last_detection = now
+                msg = random.choice(CAT_MESSAGES)
+                log.warning(
+                    "CAT DETECTED (paw press)! simultaneous=%d keys=%s",
+                    len(paw_keys), sorted(paw_keys),
+                )
+                notify(msg)
+                if args.sound:
+                    play_meow()
+                if args.lock:
+                    time.sleep(2)
+                    lock_screen()
+                key_times.clear()
+                key_hold_times.clear()
+                keys_currently_held.clear()
+                continue
+
+            # ── Streak detection (same key repeated rapidly = "fffffff") ─────
+            # No English word has the same letter 4+ times consecutively.
+            # Exclude backspace/space (humans repeat those legitimately).
+            if code not in HUMAN_HOLD_KEYS and code not in MODIFIER_KEYS:
+                key_times[code].append(now)  # also feeds walk detector below
+                streak_cutoff = now - STREAK_WINDOW_SECS
+                recent = [t for t in key_times[code] if t >= streak_cutoff]
                 if (
-                    (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
+                    len(recent) >= STREAK_MIN_COUNT
                     and (now - last_detection) > COOLDOWN_SECS
                 ):
                     last_detection = now
                     msg = random.choice(CAT_MESSAGES)
                     log.warning(
-                        "CAT DETECTED (sitting/standing)! held_keys=%d max_repeats=%d",
-                        active_held, max_repeats,
+                        "CAT DETECTED (key streak)! key=%d count=%d in %.1fs",
+                        code, len(recent), STREAK_WINDOW_SECS,
                     )
                     notify(msg)
                     if args.sound:
@@ -222,14 +342,12 @@ def run(args):
                         lock_screen()
                     key_times.clear()
                     key_hold_times.clear()
-                continue  # holds don't feed the walk detector
+                    keys_currently_held.clear()
+                    continue
+            else:
+                key_times[code].append(now)
 
             # ── Walk / burst detection (key-down events) ─────────────────────
-            if ke.keystate != ke.key_down:
-                continue
-
-            key_times[code].append(now)
-
             # Prune old timestamps across all keys
             cutoff = now - WINDOW_SECS
             active_keys = set()
@@ -248,6 +366,9 @@ def run(args):
                 unique_keys >= thresh["min_keys"]
                 and rate     >= thresh["min_rate"]
                 and spread   >= thresh["spread"]
+                # PawSense insight: cats have zero regard for backspace.
+                # If backspace/nav keys appear in the burst, it's a human.
+                and not (active_keys & HUMAN_HOLD_KEYS)
                 and (now - last_detection) > COOLDOWN_SECS
             ):
                 last_detection = now
@@ -263,9 +384,9 @@ def run(args):
                     time.sleep(2)
                     lock_screen()
 
-                # Clear both windows so we don't double-fire
                 key_times.clear()
                 key_hold_times.clear()
+                keys_currently_held.clear()
 
     async def main():
         await asyncio.gather(*[watch(kb) for kb in keyboards])
