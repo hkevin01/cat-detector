@@ -2,12 +2,19 @@
 """
 cat-detector: Watches keyboard events for cat-on-keyboard signatures.
 
-Detection algorithm:
-  - Sliding 2-second window of key-down events
-  - "Cat score" = unique keys pressed / time window (keys/sec)
-  - A cat walk produces many unique keys fast, spread across the full layout
-  - Additional heuristics: consecutive same-key repeats (kneading), sudden burst
-  - When cat_score > THRESHOLD, trigger alert, optional lock, then cooldown
+Detection algorithm — two independent modes:
+  WALK/BURST (key-down events):
+    Sliding 2.5-second window; triggers when unique key count, rate, and
+    spatial spread across the keyboard all exceed sensitivity thresholds.
+    Humans type rhythmically on the home row; cats scatter keys everywhere.
+
+  HOLD/SIT (autorepeat events, EV_KEY value=2):
+    When a cat stands or sits on keys, those keys auto-repeat at kernel
+    rate (~20-30/sec). Triggers when 2+ keys repeat simultaneously OR
+    a single key floods with 15+ repeats in 2 seconds.
+
+  After either trigger: desktop notification, optional sound/lock, 45-second
+  cooldown to prevent double-firing.
 
 Usage:
   python cat_detector.py [--lock] [--sound] [--sensitivity medium]
@@ -33,13 +40,21 @@ except ImportError:
 # ── tunables ──────────────────────────────────────────────────────────────────
 
 SENSITIVITY = {
-    "low":    {"min_keys": 22, "min_rate": 9.0,  "spread": 0.60},
-    "medium": {"min_keys": 15, "min_rate": 6.5,  "spread": 0.50},
-    "high":   {"min_keys": 10, "min_rate": 4.5,  "spread": 0.35},
+    # Thresholds are intentionally high enough that fast human typing
+    # (home-row concentrated, low spread) does NOT trigger.
+    "low":    {"min_keys": 25, "min_rate": 10.0, "spread": 0.65},
+    "medium": {"min_keys": 18, "min_rate":  7.5, "spread": 0.55},
+    "high":   {"min_keys": 12, "min_rate":  5.0, "spread": 0.40},
 }
 
-WINDOW_SECS   = 2.5   # sliding time window
+WINDOW_SECS   = 2.5   # sliding time window for walk/burst detection
 COOLDOWN_SECS = 45    # silence after a detection
+
+# Hold / sit detection — cat standing or sitting on key(s) causes autorepeat
+HOLD_WINDOW_SECS = 2.0   # look-back window for repeat floods
+HOLD_MIN_REPEATS = 15    # single key: ≥ this many repeats in window → cat paw
+HOLD_MULTI_KEYS  = 2     # ≥ this many different keys simultaneously repeating…
+HOLD_MULTI_MIN   = 5     # …each with at least this many repeats → cat sitting
 
 # Full keyboard spread buckets: left/center/right × top/home/bottom
 # Key codes grouped into 9 spatial zones
@@ -137,6 +152,7 @@ def lock_screen():
 
 import random
 
+
 def run(args):
     import asyncio
 
@@ -149,8 +165,10 @@ def run(args):
         )
         sys.exit(1)
 
-    # key_times[keycode] -> deque of event timestamps
-    key_times: dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
+    # key_times[keycode]      -> deque of key-DOWN timestamps (walk detection)
+    # key_hold_times[keycode] -> deque of autorepeat timestamps (hold/sit detection)
+    key_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
+    key_hold_times: dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     last_detection = 0.0
 
     log.info(
@@ -167,14 +185,52 @@ def run(args):
             if event.type != ecodes.EV_KEY:
                 continue
             ke = categorize(event)
+            now  = time.monotonic()
+            code = event.code
+
+            # ── Hold / sit detection (autorepeat = cat standing on key) ──────
+            if ke.keystate == ke.key_hold:
+                key_hold_times[code].append(now)
+
+                hold_cutoff = now - HOLD_WINDOW_SECS
+                active_held = 0
+                max_repeats = 0
+                for htimes in key_hold_times.values():
+                    while htimes and htimes[0] < hold_cutoff:
+                        htimes.popleft()
+                    n = len(htimes)
+                    if n >= HOLD_MULTI_MIN:
+                        active_held += 1
+                    if n > max_repeats:
+                        max_repeats = n
+
+                if (
+                    (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
+                    and (now - last_detection) > COOLDOWN_SECS
+                ):
+                    last_detection = now
+                    msg = random.choice(CAT_MESSAGES)
+                    log.warning(
+                        "CAT DETECTED (sitting/standing)! held_keys=%d max_repeats=%d",
+                        active_held, max_repeats,
+                    )
+                    notify(msg)
+                    if args.sound:
+                        play_meow()
+                    if args.lock:
+                        time.sleep(2)
+                        lock_screen()
+                    key_times.clear()
+                    key_hold_times.clear()
+                continue  # holds don't feed the walk detector
+
+            # ── Walk / burst detection (key-down events) ─────────────────────
             if ke.keystate != ke.key_down:
                 continue
 
-            now = time.monotonic()
-            code = event.code
             key_times[code].append(now)
 
-            # Prune all old timestamps across all keys
+            # Prune old timestamps across all keys
             cutoff = now - WINDOW_SECS
             active_keys = set()
             for c, times in key_times.items():
@@ -197,7 +253,7 @@ def run(args):
                 last_detection = now
                 msg = random.choice(CAT_MESSAGES)
                 log.warning(
-                    "CAT DETECTED! keys=%d rate=%.1f/s spread=%.0f%%",
+                    "CAT DETECTED (walking)! keys=%d rate=%.1f/s spread=%.0f%%",
                     unique_keys, rate, spread * 100,
                 )
                 notify(msg)
@@ -207,8 +263,9 @@ def run(args):
                     time.sleep(2)
                     lock_screen()
 
-                # Clear the window so we don't double-fire
+                # Clear both windows so we don't double-fire
                 key_times.clear()
+                key_hold_times.clear()
 
     async def main():
         await asyncio.gather(*[watch(kb) for kb in keyboards])
