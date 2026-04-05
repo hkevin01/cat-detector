@@ -29,11 +29,18 @@ Detection algorithm — three independent modes:
     it's classified as a cat pawing at the same spot repeatedly.
     Backspace and space are excluded (humans use those repetitively).
 
-  After any trigger: desktop notification, optional sound/lock, 45-second
-  cooldown to prevent double-firing.
+  INPUT PAUSE (after any detection):
+    After a cat is detected, all keyboards are grabbed exclusively for
+    --pause-secs seconds (default: 10). During this window the OS sees
+    NO further keystrokes — Enter cannot send a message, submit a form,
+    or confirm a dialog.  A second desktop notification counts down.
+    Re-detection during a grab is silently suppressed via the cooldown.
+
+  After any trigger: desktop notification, optional sound/lock, +input
+  pause, then 45-second cooldown to prevent double-firing.
 
 Usage:
-  python cat_detector.py [--lock] [--sound] [--sensitivity medium]
+  python cat_detector.py [--lock] [--sound] [--sensitivity medium] [--pause-secs 10]
 """
 
 import argparse
@@ -56,19 +63,34 @@ except ImportError:
 # ── tunables ──────────────────────────────────────────────────────────────────
 
 SENSITIVITY = {
-    # Walk/burst thresholds: high enough that fast home-row typing won't fire.
-    # min_paw: simultaneous non-modifier/non-nav keys needed for paw detection.
-    "low":    {"min_keys": 25, "min_rate": 10.0, "spread": 0.65, "min_paw": 5},
-    "medium": {"min_keys": 18, "min_rate":  7.5, "spread": 0.55, "min_paw": 4},
-    "high":   {"min_keys": 12, "min_rate":  5.0, "spread": 0.40, "min_paw": 3},
+    # Walk/burst: thresholds are deliberately set ABOVE what a fast human
+    # typist (120+ WPM) can produce, even with varied text and no corrections.
+    # A running/walking cat produces bursts of random keys at 15–25 events/sec
+    # across the whole keyboard — these thresholds only those bursts trigger.
+    # min_paw: simultaneous non-modifier/non-nav keys for paw detection.
+    "low":    {"min_keys": 28, "min_rate": 13.0, "spread": 0.72, "min_paw": 5},
+    "medium": {"min_keys": 24, "min_rate": 11.0, "spread": 0.66, "min_paw": 4},
+    "high":   {"min_keys": 18, "min_rate":  9.0, "spread": 0.55, "min_paw": 3},
 }
 
-WINDOW_SECS   = 2.5   # sliding time window for walk/burst detection
+WINDOW_SECS   = 2.0   # sliding time window — shorter = less key accumulation from fast typing
 COOLDOWN_SECS = 45    # silence after a detection
 
-# Same-key streak detection — "ffff" is a cat, not a word
+# Same-key streak detection — "ffffff" is a cat, not a word
 STREAK_WINDOW_SECS = 1.0  # look-back for rapid repeated taps of the same key
-STREAK_MIN_COUNT   = 4    # ≥ this many key-down events for same key in window
+STREAK_MIN_COUNT   = 6    # ≥ this many key-down events for same key in window
+                          # (raised from 4 — fast typists hit 4 of 't'/'e' normally)
+
+# Enter key protection — only trigger via simultaneous paw detection, NOT the
+# rolling window (rolling window always contains recently typed letters → false positives).
+# If Enter + ≥ ENTER_PAW_MIN other char keys are physically held simultaneously,
+# that is unambiguously a cat paw (humans never hold Enter + 2 chars at once).
+KEY_ENTER       = 28   # KEY_ENTER
+ENTER_PAW_MIN   = 2    # Enter + ≥ this many simultaneously held char keys → fire
+
+# Input pause / keyboard grab — after detection, grab all keyboards exclusively
+# so the OS sees NO further keystrokes until the grab is released.
+GRAB_SECS_DEFAULT = 10   # default seconds; overridable via --pause-secs
 
 # Hold / sit detection — cat standing or sitting on key(s) causes autorepeat
 HOLD_WINDOW_SECS = 2.0   # look-back window for repeat floods
@@ -225,14 +247,52 @@ def run(args):
     key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     keys_currently_held: set[int]         = set()
     last_detection = 0.0
+    grab_active    = False   # prevents stacking multiple grab tasks
+
+    # ── Input pause (keyboard grab) ──────────────────────────────────────────
+    async def pause_input() -> None:
+        """Grab all keyboards for args.pause_secs seconds so no events escape."""
+        nonlocal grab_active
+        if grab_active or args.pause_secs <= 0:
+            return
+        grab_active = True
+        grabbed = []
+        for kb in keyboards:
+            try:
+                kb.grab()
+                grabbed.append(kb)
+            except OSError:
+                pass
+        if grabbed:
+            log.info("⌨️  Input paused — keyboard grabbed for %ds", args.pause_secs)
+            if shutil.which("notify-send"):
+                subprocess.run(
+                    ["notify-send", "-u", "normal",
+                     "-t", str(args.pause_secs * 1000),
+                     "-i", "input-keyboard",
+                     "⌨️  Keyboard paused",
+                     f"Cat input blocked for {args.pause_secs}s — removing paw…"],
+                    check=False,
+                )
+        await asyncio.sleep(args.pause_secs)
+        for kb in grabbed:
+            try:
+                kb.ungrab()
+            except OSError:
+                pass
+        grab_active = False
+        if grabbed:
+            log.info("⌨️  Input resumed")
 
     log.info(
         "Cat detector running | sensitivity=%s "
         "(walk: keys≥%d rate≥%.1f/s spread≥%.0f%%) "
-        "(paw: simultaneous≥%d) (hold: repeats≥%d)",
+        "(paw: simultaneous≥%d) (hold: repeats≥%d) "
+        "(pause: %ds after detection)",
         args.sensitivity,
         thresh["min_keys"], thresh["min_rate"], thresh["spread"] * 100,
         thresh["min_paw"], HOLD_MIN_REPEATS,
+        args.pause_secs,
     )
 
     async def watch(dev):
@@ -287,6 +347,7 @@ def run(args):
                         key_times.clear()
                         key_hold_times.clear()
                         keys_currently_held.clear()
+                        asyncio.create_task(pause_input())
                 continue  # autoreps don't feed walk/paw/streak detectors
 
             # key_down from here ─────────────────────────────────────────────
@@ -296,15 +357,25 @@ def run(args):
             # A cat's paw is ~3–5 cm wide and depresses several keys at once.
             # Humans almost never hold 4+ non-modifier character keys simultaneously.
             paw_keys = keys_currently_held - MODIFIER_KEYS - HUMAN_HOLD_KEYS
+
+            # Enter special case: Enter + ≥ ENTER_PAW_MIN simultaneous char keys
+            # is unambiguously dangerous (sends messages / runs commands).
+            # Checked at a lower threshold than general paw detection.
+            enter_paw = (
+                KEY_ENTER in paw_keys
+                and len(paw_keys - {KEY_ENTER}) >= ENTER_PAW_MIN
+            )
+
             if (
-                len(paw_keys) >= thresh["min_paw"]
+                (enter_paw or len(paw_keys) >= thresh["min_paw"])
                 and (now - last_detection) > COOLDOWN_SECS
             ):
+                reason = "enter+simultaneous" if enter_paw else "paw press"
                 last_detection = now
                 msg = random.choice(CAT_MESSAGES)
                 log.warning(
-                    "CAT DETECTED (paw press)! simultaneous=%d keys=%s",
-                    len(paw_keys), sorted(paw_keys),
+                    "CAT DETECTED (%s)! simultaneous=%d keys=%s",
+                    reason, len(paw_keys), sorted(paw_keys),
                 )
                 notify(msg)
                 if args.sound:
@@ -315,6 +386,7 @@ def run(args):
                 key_times.clear()
                 key_hold_times.clear()
                 keys_currently_held.clear()
+                asyncio.create_task(pause_input())
                 continue
 
             # ── Streak detection (same key repeated rapidly = "fffffff") ─────
@@ -343,6 +415,7 @@ def run(args):
                     key_times.clear()
                     key_hold_times.clear()
                     keys_currently_held.clear()
+                    asyncio.create_task(pause_input())
                     continue
             else:
                 key_times[code].append(now)
@@ -362,12 +435,14 @@ def run(args):
             rate         = total_events / WINDOW_SECS
             spread       = zone_spread(active_keys)
 
+            # Walk trigger only — Enter is handled by paw detection above.
+            # Requires rate > 11/s (> 132 WPM total event rate) AND 24+ unique
+            # keys AND 66%+ zone spread — genuinely unreachable by normal typing.
             if (
                 unique_keys >= thresh["min_keys"]
                 and rate     >= thresh["min_rate"]
                 and spread   >= thresh["spread"]
-                # PawSense insight: cats have zero regard for backspace.
-                # If backspace/nav keys appear in the burst, it's a human.
+                # Backspace / nav keys anywhere in the burst = human, not cat.
                 and not (active_keys & HUMAN_HOLD_KEYS)
                 and (now - last_detection) > COOLDOWN_SECS
             ):
@@ -387,6 +462,7 @@ def run(args):
                 key_times.clear()
                 key_hold_times.clear()
                 keys_currently_held.clear()
+                asyncio.create_task(pause_input())
 
     async def main():
         await asyncio.gather(*[watch(kb) for kb in keyboards])
@@ -411,6 +487,14 @@ def main():
     parser.add_argument(
         "--sensitivity", choices=["low", "medium", "high"], default="medium",
         help="Detection sensitivity (default: medium)",
+    )
+    parser.add_argument(
+        "--pause-secs", type=int, default=GRAB_SECS_DEFAULT, metavar="N",
+        help=(
+            "Seconds to block keyboard input after cat detected (default: "
+            f"{GRAB_SECS_DEFAULT}; 0 = disabled). Grabs keyboard exclusively so "
+            "Enter and all other keys cannot reach any application."
+        ),
     )
     args = parser.parse_args()
     run(args)
