@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "cat-detector"
+version = "1.0.0"
+description = "Detects when a cat walks on your keyboard and responds appropriately"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "kevin" }]
+keywords = ["cat", "keyboard", "evdev", "linux", "wayland", "kde"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "evdev>=1.6",
+]
+
+[project.scripts]
+cat-detector = "cat_detector:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.ruff]
+line-length = 100
