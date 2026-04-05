@@ -1,6 +1,6 @@
 [Unit]
 Description=Cat on Keyboard Detector
-Documentation=https://github.com/YOURNAME/cat-detector
+Documentation=https://github.com/hkevin01/cat-detector
 After=graphical-session.target
 PartOf=graphical-session.target
 
