@@ -91,20 +91,20 @@ This tool is for Linux desktop users (Wayland/X11, KDE/GNOME) who share their wo
 
 ```mermaid
 flowchart TD
-    A[Linux Kernel\nHID Input Events] -->|/dev/input/eventN| B[evdev Device Monitor\nasync_read_loop per keyboard]
-    B -->|EV_KEY key_down events| C[Sliding Time Window\n2.5s rolling buffer per keycode]
-    C --> D[Score Calculator]
-    D -->|unique_keys count| E{Threshold Check\nAll 3 conditions?}
-    D -->|key-press rate| E
-    D -->|zone spread 0.0–1.0| E
-    E -->|Any condition fails| F[Continue Monitoring]
-    E -->|All conditions met| G{Cooldown\nActive?}
-    G -->|Yes — 45s window| F
-    G -->|No cooldown| H[Trigger Alert Sequence]
-    H --> I[notify-send\nDesktop Notification]
-    H --> J[play_meow\nassets/meow.wav]
-    H --> K[lock_screen\nloginctl lock-session]
-    H --> L[key_times.clear\nReset Event Window]
+  A["Linux Kernel<br/>HID Input Events"] -->|"/dev/input/eventN"| B["evdev Device Monitor<br/>async_read_loop per keyboard"]
+  B -->|"EV_KEY key_down events"| C["Sliding Time Window<br/>2.5s rolling buffer per keycode"]
+  C --> D["Score Calculator"]
+  D -->|"unique_keys count"| E{"Threshold Check<br/>All 3 conditions?"}
+  D -->|"key-press rate"| E
+  D -->|"zone spread 0.0 to 1.0"| E
+  E -->|"Any condition fails"| F["Continue Monitoring"]
+  E -->|"All conditions met"| G{"Cooldown<br/>Active?"}
+  G -->|"Yes - 45s window"| F
+  G -->|"No cooldown"| H["Trigger Alert Sequence"]
+  H --> I["notify-send<br/>Desktop Notification"]
+  H --> J["play_meow<br/>assets/meow.wav"]
+  H --> K["lock_screen<br/>loginctl lock-session"]
+  H --> L["key_times.clear<br/>Reset Event Window"]
     L --> F
 ```
 
