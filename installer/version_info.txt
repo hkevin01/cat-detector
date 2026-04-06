@@ -1,0 +1,34 @@
+# UTF-8
+# =============================================================================
+# ID:       CAT-DETECTOR-VERSIONINFO-001
+# Purpose:  Windows VERSIONINFO resource embedded in cat-detector.exe.
+#           Visible in File → Properties → Details on Windows Explorer.
+# =============================================================================
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(2, 0, 0, 0),
+    prodvers=(2, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        u'040904B0',
+        [StringStruct(u'CompanyName', u'hkevin01'),
+        StringStruct(u'FileDescription', u'Cat on Keyboard Detector'),
+        StringStruct(u'FileVersion', u'2.0.0.0'),
+        StringStruct(u'InternalName', u'cat-detector'),
+        StringStruct(u'LegalCopyright', u'Copyright (C) 2026 hkevin01. MIT License.'),
+        StringStruct(u'OriginalFilename', u'cat-detector.exe'),
+        StringStruct(u'ProductName', u'Cat Detector'),
+        StringStruct(u'ProductVersion', u'2.0.0.0')])
+      ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)
