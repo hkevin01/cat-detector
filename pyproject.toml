@@ -4,26 +4,28 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "cat-detector"
-version = "1.0.0"
-description = "Detects when a cat walks on your keyboard and responds appropriately"
+version = "2.0.0"
+description = "Detects when a cat or toddler walks on your keyboard and responds appropriately"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "kevin" }]
-keywords = ["cat", "keyboard", "evdev", "linux", "wayland", "kde"]
+keywords = ["cat", "keyboard", "evdev", "linux", "windows", "wayland", "kde", "toddler"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
 ]
-dependencies = [
-    "evdev>=1.6",
-]
+# No hard dependencies — each platform pulls only what it needs
+dependencies = []
 
 [project.scripts]
 cat-detector = "cat_detector:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+linux   = ["evdev>=1.6"]
+windows = ["pynput>=1.7", "winotify>=1.1"]
+dev     = ["pytest", "ruff"]
 
 [tool.ruff]
 line-length = 100
