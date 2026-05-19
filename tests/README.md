@@ -2,18 +2,18 @@
 
 ## Structure
 
-| File | Type | Purpose |
+| <sub>File</sub> | <sub>Type</sub> | <sub>Purpose</sub> |
 |------|------|---------|
-| `conftest.py` | Infrastructure | Platform stubs (evdev/pynput/winotify), `EngineHarness`, fixtures |
-| `test_unit_constants.py` | Unit | Constants, `zone_spread()`, key sets, messages |
-| `test_zone_spread_parametric.py` | Unit (parametric) | Every zone tested with a representative keycode |
-| `test_integration_detection.py` | Integration | Full engine: paw, streak, walk/burst, hold/sit, cooldown |
-| `test_regression_false_positives.py` | Regression | Human typing patterns that must NEVER trigger detection |
-| `test_toddler_mode.py` | Feature | `--toddler` thresholds, messages, zero lock delay |
-| `test_cli_args.py` | CLI | Argparse defaults — `--lock` on by default, `--no-lock`, `--toddler` |
-| `test_platform_abstraction.py` | Platform | `notify()`, `lock_screen()`, `play_meow()` on Linux & Windows stubs |
-| `test_deployment.py` | Deployment | Import smoke, `pyproject.toml`, service file, `install.sh` |
-| `test_windows_vk_map.py` | Platform | Windows VK→evdev translation correctness |
+| <sub>`conftest.py`</sub> | <sub>Infrastructure</sub> | <sub>Platform stubs (evdev/pynput/winotify), `EngineHarness`, fixtures</sub> |
+| <sub>`test_unit_constants.py`</sub> | <sub>Unit</sub> | <sub>Constants, `zone_spread()`, key sets, messages</sub> |
+| <sub>`test_zone_spread_parametric.py`</sub> | <sub>Unit (parametric)</sub> | <sub>Every zone tested with a representative keycode</sub> |
+| <sub>`test_integration_detection.py`</sub> | <sub>Integration</sub> | <sub>Full engine: paw, streak, walk/burst, hold/sit, cooldown</sub> |
+| <sub>`test_regression_false_positives.py`</sub> | <sub>Regression</sub> | <sub>Human typing patterns that must NEVER trigger detection</sub> |
+| <sub>`test_toddler_mode.py`</sub> | <sub>Feature</sub> | <sub>`--toddler` thresholds, messages, zero lock delay</sub> |
+| <sub>`test_cli_args.py`</sub> | <sub>CLI</sub> | <sub>Argparse defaults — `--lock` on by default, `--no-lock`, `--toddler`</sub> |
+| <sub>`test_platform_abstraction.py`</sub> | <sub>Platform</sub> | <sub>`notify()`, `lock_screen()`, `play_meow()` on Linux & Windows stubs</sub> |
+| <sub>`test_deployment.py`</sub> | <sub>Deployment</sub> | <sub>Import smoke, `pyproject.toml`, service file, `install.sh`</sub> |
+| <sub>`test_windows_vk_map.py`</sub> | <sub>Platform</sub> | <sub>Windows VK→evdev translation correctness</sub> |
 
 ## Running
 
