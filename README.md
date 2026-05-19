@@ -67,21 +67,21 @@ This tool is for desktop users who share their workspace with one or more cats (
 
 ## ✨ Key Features
 
-| Icon | Feature | Description | Impact | Status |
+| <sub>Icon</sub> | <sub>Feature</sub> | <sub>Description</sub> | <sub>Impact</sub> | <sub>Status</sub> |
 |------|---------|-------------|--------|--------|
-| 🧠 | Smart Detection Algorithm | Sliding 2s window scoring unique keys, press rate, and spatial zone spread simultaneously | High | ✅ Stable |
-| 🗺️ | 9-Zone Keyboard Mapping | Full keyboard split into top/home/bottom × left/center/right zones to detect paw spread | High | ✅ Stable |
-| 🔔 | Desktop Notifications | `notify-send` (Linux) / toast (Windows) popups with snarky cat messages | High | ✅ Stable |
-| 🔒 | Auto Screen Lock | Locks screen **by default** on detection — use `--no-lock` to disable | High | ✅ Stable |
-| 🍼 | Toddler Mode | `--toddler` flag catches small-hand bursts (lower thresholds, instant lock, no grace period) | High | ✅ Stable |
-| 🔊 | Meow Sound Alert | Plays `assets/meow.wav` via PipeWire, PulseAudio, ALSA, or Windows — enabled with `--sound` | Medium | ✅ Stable |
-| ⚙️ | Three Sensitivity Levels | `low`, `medium`, `high` — tune to your specific cat's walking style | High | ✅ Stable |
-| ⏸️ | Configurable Input Pause Detection | `--pause-secs N` — detect when the keyboard goes silent (cat sitting on it) | Medium | ✅ Stable |
-| 🤖 | Systemd User Service (Linux) | Auto-starts with your graphical session, restarts on failure | Medium | ✅ Stable |
-| 😴 | Cooldown Protection | 45-second post-detection silence prevents notification storms | Medium | ✅ Stable |
-| 🖥️ | Multi-Keyboard Support | Monitors all connected keyboards concurrently | Medium | ✅ Stable |
-| 🪟 | Windows Installer | PyInstaller `.exe` with Inno Setup GUI installer, Start Menu shortcuts, optional startup task | High | ✅ Stable |
-| 🧪 | Comprehensive Test Suite | 142 tests across 8 files covering detection, CLI, platform abstraction, and deployment | High | ✅ Stable |
+| <sub>🧠</sub> | <sub>Smart Detection Algorithm</sub> | <sub>Sliding 2s window scoring unique keys, press rate, and spatial zone spread simultaneously</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>🗺️</sub> | <sub>9-Zone Keyboard Mapping</sub> | <sub>Full keyboard split into top/home/bottom × left/center/right zones to detect paw spread</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>🔔</sub> | <sub>Desktop Notifications</sub> | <sub>`notify-send` (Linux) / toast (Windows) popups with snarky cat messages</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>🔒</sub> | <sub>Auto Screen Lock</sub> | <sub>Locks screen **by default** on detection — use `--no-lock` to disable</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>🍼</sub> | <sub>Toddler Mode</sub> | <sub>`--toddler` flag catches small-hand bursts (lower thresholds, instant lock, no grace period)</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>🔊</sub> | <sub>Meow Sound Alert</sub> | <sub>Plays `assets/meow.wav` via PipeWire, PulseAudio, ALSA, or Windows — enabled with `--sound`</sub> | <sub>Medium</sub> | <sub>✅ Stable</sub> |
+| <sub>⚙️</sub> | <sub>Three Sensitivity Levels</sub> | <sub>`low`, `medium`, `high` — tune to your specific cat's walking style</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>⏸️</sub> | <sub>Configurable Input Pause Detection</sub> | <sub>`--pause-secs N` — detect when the keyboard goes silent (cat sitting on it)</sub> | <sub>Medium</sub> | <sub>✅ Stable</sub> |
+| <sub>🤖</sub> | <sub>Systemd User Service (Linux)</sub> | <sub>Auto-starts with your graphical session, restarts on failure</sub> | <sub>Medium</sub> | <sub>✅ Stable</sub> |
+| <sub>😴</sub> | <sub>Cooldown Protection</sub> | <sub>45-second post-detection silence prevents notification storms</sub> | <sub>Medium</sub> | <sub>✅ Stable</sub> |
+| <sub>🖥️</sub> | <sub>Multi-Keyboard Support</sub> | <sub>Monitors all connected keyboards concurrently</sub> | <sub>Medium</sub> | <sub>✅ Stable</sub> |
+| <sub>🪟</sub> | <sub>Windows Installer</sub> | <sub>PyInstaller `.exe` with Inno Setup GUI installer, Start Menu shortcuts, optional startup task</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
+| <sub>🧪</sub> | <sub>Comprehensive Test Suite</sub> | <sub>142 tests across 8 files covering detection, CLI, platform abstraction, and deployment</sub> | <sub>High</sub> | <sub>✅ Stable</sub> |
 
 **Highlights:**
 - Detection activates in under 100 ms from first paw contact event
@@ -125,22 +125,22 @@ flowchart TD
 
 ### Component Responsibilities
 
-| Component | File | Responsibility |
+| <sub>Component</sub> | <sub>File</sub> | <sub>Responsibility</sub> |
 |-----------|------|----------------|
-| Detection Engine | `cat_detector.py` (`_detection_engine()`) | Platform-agnostic scoring: sliding window, cat score computation |
-| Linux Backend | `cat_detector.py` (`run_linux()`) | Reads evdev events, feeds `SimpleQueue` |
-| Windows Backend | `cat_detector.py` (`run_windows()`) | pynput keyboard hook, feeds `SimpleQueue` |
-| Zone Mapper | `cat_detector.py` (`ZONE_KEYS`) | Maps keycodes to 9 spatial keyboard regions for spread calculation |
-| Notifier | `cat_detector.py` (`notify()`) | `notify-send` (Linux) or `winotify` toast (Windows) |
-| Sound Player | `cat_detector.py` (`play_meow()`) | Plays `assets/meow.wav` via PipeWire → PulseAudio → ALSA → Windows |
-| Screen Locker | `cat_detector.py` (`lock_screen()`) | `loginctl` / KDE / `xdg-screensaver` (Linux) or `rundll32` (Windows) |
-| Service Unit | `cat-detector.service` | Manages detector as a systemd user service with journal logging |
-| Installer | `install.sh` | Adds user to `input` group, deploys and enables the systemd unit |
-| Windows Spec | `cat_detector.spec` | PyInstaller onefile build spec for Windows `.exe` |
-| Windows Installer | `installer/cat-detector.iss` | Inno Setup 6 script — GUI installer with Start Menu & optional startup |
-| Build Script | `scripts/build_windows.ps1` | PowerShell local build script (PyInstaller + Inno Setup) |
-| CI/CD | `.github/workflows/build-windows.yml` | GitHub Actions: build exe + installer, upload artifacts, create release on tag |
-| Test Suite | `tests/` | 142 tests across 8 files covering detection, CLI, platform, deployment |
+| <sub>Detection Engine</sub> | <sub>`cat_detector.py` (`_detection_engine()`)</sub> | <sub>Platform-agnostic scoring: sliding window, cat score computation</sub> |
+| <sub>Linux Backend</sub> | <sub>`cat_detector.py` (`run_linux()`)</sub> | <sub>Reads evdev events, feeds `SimpleQueue`</sub> |
+| <sub>Windows Backend</sub> | <sub>`cat_detector.py` (`run_windows()`)</sub> | <sub>pynput keyboard hook, feeds `SimpleQueue`</sub> |
+| <sub>Zone Mapper</sub> | <sub>`cat_detector.py` (`ZONE_KEYS`)</sub> | <sub>Maps keycodes to 9 spatial keyboard regions for spread calculation</sub> |
+| <sub>Notifier</sub> | <sub>`cat_detector.py` (`notify()`)</sub> | <sub>`notify-send` (Linux) or `winotify` toast (Windows)</sub> |
+| <sub>Sound Player</sub> | <sub>`cat_detector.py` (`play_meow()`)</sub> | <sub>Plays `assets/meow.wav` via PipeWire → PulseAudio → ALSA → Windows</sub> |
+| <sub>Screen Locker</sub> | <sub>`cat_detector.py` (`lock_screen()`)</sub> | <sub>`loginctl` / KDE / `xdg-screensaver` (Linux) or `rundll32` (Windows)</sub> |
+| <sub>Service Unit</sub> | <sub>`cat-detector.service`</sub> | <sub>Manages detector as a systemd user service with journal logging</sub> |
+| <sub>Installer</sub> | <sub>`install.sh`</sub> | <sub>Adds user to `input` group, deploys and enables the systemd unit</sub> |
+| <sub>Windows Spec</sub> | <sub>`cat_detector.spec`</sub> | <sub>PyInstaller onefile build spec for Windows `.exe`</sub> |
+| <sub>Windows Installer</sub> | <sub>`installer/cat-detector.iss`</sub> | <sub>Inno Setup 6 script — GUI installer with Start Menu & optional startup</sub> |
+| <sub>Build Script</sub> | <sub>`scripts/build_windows.ps1`</sub> | <sub>PowerShell local build script (PyInstaller + Inno Setup)</sub> |
+| <sub>CI/CD</sub> | <sub>`.github/workflows/build-windows.yml`</sub> | <sub>GitHub Actions: build exe + installer, upload artifacts, create release on tag</sub> |
+| <sub>Test Suite</sub> | <sub>`tests/`</sub> | <sub>142 tests across 8 files covering detection, CLI, platform, deployment</sub> |
 
 <p align="right">(<a href="#top">back to top ↑</a>)</p>
 
@@ -218,21 +218,21 @@ The keyboard is divided into **9 spatial zones** mapped by Linux evdev keycodes.
 
 ## 🛠️ Technology Stack
 
-| Technology | Purpose | Why Chosen | Alternatives Considered |
+| <sub>Technology</sub> | <sub>Purpose</sub> | <sub>Why Chosen</sub> | <sub>Alternatives Considered</sub> |
 |------------|---------|------------|------------------------|
-| Python 3.11+ | Core runtime | Async support, evdev/pynput bindings, rapid iteration | Rust (overkill for event stream processing) |
-| python-evdev 1.6+ | Raw kernel event reading (Linux) | Only library with reliable Linux input event access — no X11/Wayland dependency | pynput (X11-only on Linux), xdotool (no raw events) |
-| pynput 1.7+ | Keyboard hook (Windows) | Cross-platform Win32 hook; no kernel driver required | ctypes Win32 direct (more boilerplate) |
-| asyncio | Concurrent multi-keyboard monitoring (Linux) | Monitors multiple keyboards with zero threads; event loop matches evdev's async API | threading (heavier, unnecessary for I/O-bound work) |
-| queue.SimpleQueue | Platform-agnostic event bus | Decouples platform backends from the shared detection engine | asyncio.Queue (Linux-only) |
-| notify-send / libnotify | Desktop notifications (Linux) | Wayland/X11 agnostic; works on KDE, GNOME, XFCE natively | libnotify Python binding (extra dep, same effect) |
-| winotify 1.1+ | Desktop notifications (Windows) | Native Win32 toast notifications; no external tools required | plyer (heavier cross-platform dep) |
-| systemd user service | Auto-start and process management (Linux) | Native Linux process supervisor; restarts on failure, logs to journal | cron @reboot (no restart, no structured logging) |
-| paplay / aplay / pw-play | Audio playback (Linux) | Tries PipeWire → PulseAudio → ALSA fallback chain automatically | pygame (heavy game/ML library for a simple .wav) |
-| loginctl | Screen locking (Linux) | D-Bus controlled, compositor-agnostic; works reliably on Wayland | xdg-screensaver (X11 primarily, inconsistent on Wayland) |
-| PyInstaller 6+ | Windows executable packaging | Bundles Python + deps into a single `.exe`; no Python required on target | cx_Freeze (less tooling), Nuitka (longer compile) |
-| Inno Setup 6 | Windows GUI installer | Free, scriptable, trusted — produces a standard installer with Start Menu & startup task | NSIS (more complex scripting) |
-| pytest 9+ | Test framework | 142 tests across 8 files; fixture-based engine harness for hardware-free testing | unittest (more verbose) |
+| <sub>Python 3.11+</sub> | <sub>Core runtime</sub> | <sub>Async support, evdev/pynput bindings, rapid iteration</sub> | <sub>Rust (overkill for event stream processing)</sub> |
+| <sub>python-evdev 1.6+</sub> | <sub>Raw kernel event reading (Linux)</sub> | <sub>Only library with reliable Linux input event access — no X11/Wayland dependency</sub> | <sub>pynput (X11-only on Linux), xdotool (no raw events)</sub> |
+| <sub>pynput 1.7+</sub> | <sub>Keyboard hook (Windows)</sub> | <sub>Cross-platform Win32 hook; no kernel driver required</sub> | <sub>ctypes Win32 direct (more boilerplate)</sub> |
+| <sub>asyncio</sub> | <sub>Concurrent multi-keyboard monitoring (Linux)</sub> | <sub>Monitors multiple keyboards with zero threads; event loop matches evdev's async API</sub> | <sub>threading (heavier, unnecessary for I/O-bound work)</sub> |
+| <sub>queue.SimpleQueue</sub> | <sub>Platform-agnostic event bus</sub> | <sub>Decouples platform backends from the shared detection engine</sub> | <sub>asyncio.Queue (Linux-only)</sub> |
+| <sub>notify-send / libnotify</sub> | <sub>Desktop notifications (Linux)</sub> | <sub>Wayland/X11 agnostic; works on KDE, GNOME, XFCE natively</sub> | <sub>libnotify Python binding (extra dep, same effect)</sub> |
+| <sub>winotify 1.1+</sub> | <sub>Desktop notifications (Windows)</sub> | <sub>Native Win32 toast notifications; no external tools required</sub> | <sub>plyer (heavier cross-platform dep)</sub> |
+| <sub>systemd user service</sub> | <sub>Auto-start and process management (Linux)</sub> | <sub>Native Linux process supervisor; restarts on failure, logs to journal</sub> | <sub>cron @reboot (no restart, no structured logging)</sub> |
+| <sub>paplay / aplay / pw-play</sub> | <sub>Audio playback (Linux)</sub> | <sub>Tries PipeWire → PulseAudio → ALSA fallback chain automatically</sub> | <sub>pygame (heavy game/ML library for a simple .wav)</sub> |
+| <sub>loginctl</sub> | <sub>Screen locking (Linux)</sub> | <sub>D-Bus controlled, compositor-agnostic; works reliably on Wayland</sub> | <sub>xdg-screensaver (X11 primarily, inconsistent on Wayland)</sub> |
+| <sub>PyInstaller 6+</sub> | <sub>Windows executable packaging</sub> | <sub>Bundles Python + deps into a single `.exe`; no Python required on target</sub> | <sub>cx_Freeze (less tooling), Nuitka (longer compile)</sub> |
+| <sub>Inno Setup 6</sub> | <sub>Windows GUI installer</sub> | <sub>Free, scriptable, trusted — produces a standard installer with Start Menu & startup task</sub> | <sub>NSIS (more complex scripting)</sub> |
+| <sub>pytest 9+</sub> | <sub>Test framework</sub> | <sub>142 tests across 8 files; fixture-based engine harness for hardware-free testing</sub> | <sub>unittest (more verbose)</sub> |
 
 <p align="right">(<a href="#top">back to top ↑</a>)</p>
 
@@ -346,13 +346,13 @@ systemctl --user enable --now cat-detector.service
 python3 cat_detector.py [OPTIONS]
 ```
 
-| Option | Default | Description |
+| <sub>Option</sub> | <sub>Default</sub> | <sub>Description</sub> |
 |--------|---------|-------------|
-| `--sensitivity` | `medium` | Detection threshold: `low`, `medium`, or `high` |
-| `--no-lock` | *(lock is on)* | Disable automatic screen lock on detection |
-| `--sound` | off | Play `assets/meow.wav` on detection |
-| `--toddler` | off | Enable toddler mode (lower thresholds, instant lock, no grace period) |
-| `--pause-secs` | `10` | Seconds of keyboard silence before triggering an input-pause detection |
+| <sub>`--sensitivity`</sub> | <sub>`medium`</sub> | <sub>Detection threshold: `low`, `medium`, or `high`</sub> |
+| <sub>`--no-lock`</sub> | <sub>*(lock is on)*</sub> | <sub>Disable automatic screen lock on detection</sub> |
+| <sub>`--sound`</sub> | <sub>off</sub> | <sub>Play `assets/meow.wav` on detection</sub> |
+| <sub>`--toddler`</sub> | <sub>off</sub> | <sub>Enable toddler mode (lower thresholds, instant lock, no grace period)</sub> |
+| <sub>`--pause-secs`</sub> | <sub>`10`</sub> | <sub>Seconds of keyboard silence before triggering an input-pause detection</sub> |
 
 **Examples:**
 
@@ -388,12 +388,12 @@ Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to stop a manually-started detector session.
 
 ### Sensitivity Levels
 
-| Level | Min Unique Keys | Min Rate | Zone Spread | Min Paw Keys | Best For |
+| <sub>Level</sub> | <sub>Min Unique Keys</sub> | <sub>Min Rate</sub> | <sub>Zone Spread</sub> | <sub>Min Paw Keys</sub> | <sub>Best For</sub> |
 |-------|----------------|----------|-------------|--------------|---------|
-| `low` | 28 | 13.0 keys/s | 72% of zones | 5 | Heavy-footed cats; zero false positives for any typing speed |
-| `medium` | 24 | 11.0 keys/s | 66% of zones | 4 | Most cats; balanced sensitivity — **default** |
-| `high` | 18 | 9.0 keys/s | 55% of zones | 3 | Dainty steppers, kittens, single-paw walkers |
-| `toddler` | 8 | 5.0 keys/s | 22% of zones | 2 | Small hands / palm slams — use the `--toddler` flag |
+| <sub>`low`</sub> | <sub>28</sub> | <sub>13.0 keys/s</sub> | <sub>72% of zones</sub> | <sub>5</sub> | <sub>Heavy-footed cats; zero false positives for any typing speed</sub> |
+| <sub>`medium`</sub> | <sub>24</sub> | <sub>11.0 keys/s</sub> | <sub>66% of zones</sub> | <sub>4</sub> | <sub>Most cats; balanced sensitivity — **default**</sub> |
+| <sub>`high`</sub> | <sub>18</sub> | <sub>9.0 keys/s</sub> | <sub>55% of zones</sub> | <sub>3</sub> | <sub>Dainty steppers, kittens, single-paw walkers</sub> |
+| <sub>`toddler`</sub> | <sub>8</sub> | <sub>5.0 keys/s</sub> | <sub>22% of zones</sub> | <sub>2</sub> | <sub>Small hands / palm slams — use the `--toddler` flag</sub> |
 
 > [!WARNING]
 > Using `high` sensitivity on a machine with vibration nearby or during rapid gaming input may produce false positives. Start with `medium` and tune from there.
@@ -462,18 +462,18 @@ Screen lock is **on by default**. Use `--no-lock` to disable. The locker tries m
 
 The detector rotates through 10 snarky notification messages at random on each detection event:
 
-| # | Message |
+| <sub>#</sub> | <sub>Message</sub> |
 |---|---------|
-| 1 | 🐱 CAT ALERT: A feline has claimed your keyboard as a bed. |
-| 2 | 🐾 Paw detected on keyboard. Dignity: compromised. |
-| 3 | 😸 Your cat is clearly more important than what you were doing. |
-| 4 | 🐈 Keyboard invasion in progress. Resistance is futile. |
-| 5 | 😾 Cat says: your work is NOT important right now. |
-| 6 | 🐱 Input from cat detected. Quality of work may improve. |
-| 7 | 🐾 Unscheduled cat meeting commenced on keyboard. |
-| 8 | 🐈‍⬛ Error 404: Keyboard not found (buried under cat). |
-| 9 | 😻 Your laptop now belongs to the cat. Please negotiate. |
-| 10 | 🐱 Cat-initiated git commit: 'asdfghjkl;' — pushing to main. |
+| <sub>1</sub> | <sub>🐱 CAT ALERT: A feline has claimed your keyboard as a bed.</sub> |
+| <sub>2</sub> | <sub>🐾 Paw detected on keyboard. Dignity: compromised.</sub> |
+| <sub>3</sub> | <sub>😸 Your cat is clearly more important than what you were doing.</sub> |
+| <sub>4</sub> | <sub>🐈 Keyboard invasion in progress. Resistance is futile.</sub> |
+| <sub>5</sub> | <sub>😾 Cat says: your work is NOT important right now.</sub> |
+| <sub>6</sub> | <sub>🐱 Input from cat detected. Quality of work may improve.</sub> |
+| <sub>7</sub> | <sub>🐾 Unscheduled cat meeting commenced on keyboard.</sub> |
+| <sub>8</sub> | <sub>🐈‍⬛ Error 404: Keyboard not found (buried under cat).</sub> |
+| <sub>9</sub> | <sub>😻 Your laptop now belongs to the cat. Please negotiate.</sub> |
+| <sub>10</sub> | <sub>🐱 Cat-initiated git commit: 'asdfghjkl;' — pushing to main.</sub> |
 
 </details>
 
@@ -585,11 +585,11 @@ gantt
         Sound volume control         :         k3, 2026-06-01, 2026-06-15
 ```
 
-| Phase | Goals | Target | Status |
+| <sub>Phase</sub> | <sub>Goals</sub> | <sub>Target</sub> | <sub>Status</sub> |
 |-------|-------|--------|--------|
-| v1.0 | Core detection engine, systemd service, three sensitivity levels | 2026-Q1 | ✅ Complete |
-| v2.0 | Windows support, toddler mode, auto-lock default, Windows installer, 142-test suite | 2026-Q2 | ✅ Complete |
-| v2.1 | Config file, kneading detection tuning, sound volume control | 2026-Q2/Q3 | 🟡 In Progress |
+| <sub>v1.0</sub> | <sub>Core detection engine, systemd service, three sensitivity levels</sub> | <sub>2026-Q1</sub> | <sub>✅ Complete</sub> |
+| <sub>v2.0</sub> | <sub>Windows support, toddler mode, auto-lock default, Windows installer, 142-test suite</sub> | <sub>2026-Q2</sub> | <sub>✅ Complete</sub> |
+| <sub>v2.1</sub> | <sub>Config file, kneading detection tuning, sound volume control</sub> | <sub>2026-Q2/Q3</sub> | <sub>🟡 In Progress</sub> |
 
 <p align="right">(<a href="#top">back to top ↑</a>)</p>
 
@@ -597,12 +597,12 @@ gantt
 
 ## 📊 Development Status
 
-| Version | Platform | Stability | Python | Known Limitations |
+| <sub>Version</sub> | <sub>Platform</sub> | <sub>Stability</sub> | <sub>Python</sub> | <sub>Known Limitations</sub> |
 |---------|----------|-----------|--------|------------------|
-| 2.0.0 | Linux | ✅ Stable | 3.11+ | Settings require CLI flags or editing the service unit — no config file yet |
-| 2.0.0 | Linux | ✅ Stable | 3.11+ | Arch Linux primary test target; Ubuntu/Fedora steps documented but less tested |
-| 2.0.0 | Linux | ✅ Stable | 3.11+ | Screen lock assumes KDE/systemd-logind; GNOME may need additional configuration |
-| 2.0.0 | Windows | ✅ Stable | 3.11+ | Screen lock uses `rundll32`; may not work on locked-down corporate machines |
+| <sub>2.0.0</sub> | <sub>Linux</sub> | <sub>✅ Stable</sub> | <sub>3.11+</sub> | <sub>Settings require CLI flags or editing the service unit — no config file yet</sub> |
+| <sub>2.0.0</sub> | <sub>Linux</sub> | <sub>✅ Stable</sub> | <sub>3.11+</sub> | <sub>Arch Linux primary test target; Ubuntu/Fedora steps documented but less tested</sub> |
+| <sub>2.0.0</sub> | <sub>Linux</sub> | <sub>✅ Stable</sub> | <sub>3.11+</sub> | <sub>Screen lock assumes KDE/systemd-logind; GNOME may need additional configuration</sub> |
+| <sub>2.0.0</sub> | <sub>Windows</sub> | <sub>✅ Stable</sub> | <sub>3.11+</sub> | <sub>Screen lock uses `rundll32`; may not work on locked-down corporate machines</sub> |
 
 <p align="right">(<a href="#top">back to top ↑</a>)</p>
 
