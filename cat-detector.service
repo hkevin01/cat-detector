@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/sg input -c "/usr/bin/python3 %h/Projects/cat-detector/cat_detector.py --confirm"
+ExecStart=/usr/bin/sg input -c "/usr/bin/python3 %h/Projects/cat-detector/cat_detector.py"
 Restart=on-failure
 RestartSec=30
 RestartSteps=3
