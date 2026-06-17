@@ -10,6 +10,9 @@ Detection modes:
   PAW PRESS      — 3–5+ non-modifier keys physically held at the same moment
   STREAK         — same key tapped 6+ times within 1 second ("ffffff")
   INPUT PAUSE    — after any trigger, all input is suppressed for --pause-secs seconds
+  CONFIRM MODE   — --confirm holds the keyboard grab indefinitely until you press
+                   Ctrl+Alt+K to confirm the cat is gone (Linux) or Right-Ctrl
+                   on Windows.  Safer than a fixed timeout.
 
 Toddler mode (--toddler):
   Dramatically lowers every threshold so that the frantic, palm-slapping style
@@ -21,6 +24,7 @@ Screen lock is ON by default.  Use --no-lock to disable it.
 Usage:
   python cat_detector.py [--no-lock] [--sound] [--toddler]
                          [--sensitivity medium] [--pause-secs 10]
+                         [--confirm]
 """
 
 import argparse
@@ -117,6 +121,12 @@ ENTER_PAW_MIN   = 2    # Enter + ≥ this many simultaneously held char keys →
 # Input pause / keyboard grab — after detection, grab all keyboards exclusively
 # so the OS sees NO further keystrokes until the grab is released.
 GRAB_SECS_DEFAULT = 10   # default seconds; overridable via --pause-secs
+
+# Confirm-mode: key combo the user presses to signal the cat is gone.
+# Linux evdev codes: KEY_LEFTCTRL=29, KEY_LEFTALT=56, KEY_K=37
+# Right-Ctrl alone (code 97) is the Windows fallback (easy single-key confirm).
+CONFIRM_COMBO_LINUX   = {29, 56, 37}   # Ctrl + Alt + K
+CONFIRM_KEY_WINDOWS   = 0xA3           # Right Ctrl VK code
 
 # Hold / sit detection — cat standing or sitting on key(s) causes autorepeat
 HOLD_WINDOW_SECS = 2.0   # look-back window for repeat floods
@@ -241,24 +251,27 @@ def notify(message: str, urgency: str = "critical"):
             log.warning("winotify unavailable — printed to console")
 
 
-def notify_pause(pause_secs: int):
+def notify_pause(pause_secs: int, confirm: bool = False):
     """Notify the user that keyboard input is paused."""
-    msg = f"Cat input blocked for {pause_secs}s — removing paw…"
+    if confirm:
+        msg = "Keyboard BLOCKED until cat is gone. Press Ctrl+Alt+K to release."
+    else:
+        msg = f"Cat input blocked for {pause_secs}s — removing paw…"
+    timeout_ms = 0 if confirm else pause_secs * 1000
     if _PLATFORM == "Linux":
         if shutil.which("notify-send"):
-            subprocess.run(
-                ["notify-send", "-u", "normal",
-                 "-t", str(pause_secs * 1000),
-                 "-i", "input-keyboard",
-                 "⌨️  Keyboard paused", msg],
-                check=False,
-            )
+            cmd = ["notify-send", "-u", "critical" if confirm else "normal",
+                   "-i", "input-keyboard",
+                   "⌨️  Keyboard BLOCKED" if confirm else "⌨️  Keyboard paused", msg]
+            if timeout_ms:
+                cmd += ["-t", str(timeout_ms)]
+            subprocess.run(cmd, check=False)
     elif _PLATFORM == "Windows":
         try:
             from winotify import Notification
             toast = Notification(
                 app_id="cat-detector",
-                title="⌨️  Keyboard paused",
+                title="⌨️  Keyboard BLOCKED" if confirm else "⌨️  Keyboard paused",
                 msg=msg,
             )
             toast.show()
@@ -346,13 +359,18 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     # ── Input-pause helper ────────────────────────────────────────────────────
     def _pause_input_thread():
         nonlocal grab_active
-        if grab_active or args.pause_secs <= 0:
+        if grab_active:
+            return
+        confirm_mode = getattr(args, "confirm", False)
+        if not confirm_mode and args.pause_secs <= 0:
             return
         grab_active = True
-        notify_pause(args.pause_secs)
+        notify_pause(args.pause_secs, confirm=confirm_mode)
 
-        # Linux: exclusive evdev grab; Windows: pynput suppress flag is toggled
-        if _PLATFORM == "Linux":
+        if confirm_mode:
+            _pause_until_confirmed()
+        elif _PLATFORM == "Linux":
+            # timed grab
             grabbed = []
             for kb in _linux_keyboards:
                 try:
@@ -369,13 +387,110 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
                 except OSError:
                     pass
         else:
-            # Windows: signal the pynput listener to suppress events
+            # Windows timed
             _win_suppress_event.set()
             time.sleep(args.pause_secs)
             _win_suppress_event.clear()
 
         grab_active = False
         log.info("⌨️  Input resumed")
+
+    def _pause_until_confirmed():
+        """Hold keyboard grab until the user presses the confirm combo."""
+        import threading as _t
+        release_event = _t.Event()
+
+        if _PLATFORM == "Linux":
+            # Grab all keyboards.  Open a *separate* non-grabbed fd on each
+            # device so we can still read the confirm combo while grabbed.
+            import select as _select
+            grabbed = []
+            confirm_fds = {}   # fd -> InputDevice path
+            for kb in _linux_keyboards:
+                try:
+                    kb.grab()
+                    grabbed.append(kb)
+                except OSError:
+                    pass
+            # Open fresh ungrabbed fds for reading the confirm combo
+            for kb in grabbed:
+                try:
+                    fd = open(kb.path, "rb", buffering=0)
+                    confirm_fds[fd.fileno()] = fd
+                except OSError:
+                    pass
+            if grabbed:
+                log.info("⌨️  Input BLOCKED — press Ctrl+Alt+K to release")
+            else:
+                release_event.set()
+
+            # Poll confirm fds for the Ctrl+Alt+K combo
+            held = set()
+            while not release_event.is_set():
+                readable, _, _ = _select.select(list(confirm_fds), [], [], 0.2)
+                for fileno in readable:
+                    raw = confirm_fds[fileno].read(24)  # one struct input_event
+                    if len(raw) < 16:
+                        continue
+                    import struct as _struct
+                    # struct input_event: timeval(8 or 16 bytes) + type(2) + code(2) + value(4)
+                    # Try 16-byte timeval first (64-bit), then 8-byte (32-bit)
+                    for hdr in (16, 8):
+                        if len(raw) >= hdr + 8:
+                            _type, code, value = _struct.unpack_from("HHi", raw, hdr)
+                            if _type == 1:  # EV_KEY
+                                if value == 1:   # key down
+                                    held.add(code)
+                                elif value == 0: # key up
+                                    held.discard(code)
+                            break
+                    if CONFIRM_COMBO_LINUX.issubset(held):
+                        log.info("⌨️  Confirm combo received — releasing grab")
+                        release_event.set()
+
+            for fd in confirm_fds.values():
+                try:
+                    fd.close()
+                except OSError:
+                    pass
+            for kb in grabbed:
+                try:
+                    kb.ungrab()
+                except OSError:
+                    pass
+
+        else:
+            # Windows: suppress all events; watch Right-Ctrl as confirm key
+            _win_suppress_event.set()
+            log.info("⌨️  Input BLOCKED — press Right-Ctrl to release")
+
+            # Notify every 30s as a reminder
+            def _remind():
+                while not release_event.is_set():
+                    release_event.wait(30)
+                    if not release_event.is_set():
+                        notify_pause(0, confirm=True)
+            _t.Thread(target=_remind, daemon=True).start()
+
+            def _watch_confirm(key):
+                try:
+                    vk = key.value.vk
+                except AttributeError:
+                    try:
+                        vk = key.vk
+                    except AttributeError:
+                        return
+                if vk == CONFIRM_KEY_WINDOWS:
+                    log.info("⌨️  Confirm key received — releasing grab")
+                    release_event.set()
+                    return False  # stop listener
+
+            confirm_listener = _pynput_kb.Listener(
+                on_press=_watch_confirm, suppress=False)
+            confirm_listener.start()
+            release_event.wait()
+            confirm_listener.stop()
+            _win_suppress_event.clear()
 
     def _fire(reason: str, **log_kw):
         nonlocal last_detection
@@ -706,7 +821,15 @@ def main() -> None:
         help=(
             f"Seconds to block keyboard input after detection (default: {GRAB_SECS_DEFAULT}; "
             "0 = disabled). Grabs keyboard exclusively so Enter and all other keys "
-            "cannot reach any application."
+            "cannot reach any application. Ignored when --confirm is set."
+        ),
+    )
+    parser.add_argument(
+        "--confirm", action="store_true",
+        help=(
+            "Hold the keyboard grab INDEFINITELY after detection until you confirm "
+            "the cat is gone. On Linux press Ctrl+Alt+K to release. On Windows press "
+            "Right-Ctrl. Overrides --pause-secs. Recommended for unattended setups."
         ),
     )
     args = parser.parse_args()
