@@ -117,6 +117,14 @@ STREAK_MIN_COUNT   = 6    # ≥ this many key-down events for same key in window
 KEY_ENTER       = 28   # KEY_ENTER
 ENTER_PAW_MIN   = 2    # Enter + ≥ this many simultaneously held char keys → fire
 
+# Input pause / keyboard grab — after detection, grab all keyboards exclusively
+# so the OS sees NO further keystrokes until the grab is released.
+GRAB_SECS_DEFAULT = 15   # seconds to freeze keyboard after detection
+PID_FILE = "/tmp/cat-detector.pid"
+
+# Populated by _detection_engine so run_linux() can wire SIGUSR1 to it.
+_engine_force_release_ref: list = []
+
 # Hold / sit detection — cat standing or sitting on key(s) causes autorepeat
 HOLD_WINDOW_SECS = 2.0   # look-back window for repeat floods
 HOLD_MIN_REPEATS = 15    # single key: ≥ this many repeats in window → cat paw
@@ -447,12 +455,14 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         "%s detector running | sensitivity=%s%s "
         "(walk: keys≥%d rate≥%.1f/s spread≥%.0f%%) "
         "(paw: simultaneous≥%d) (hold: repeats≥%d) "
+        "(pause: %ds after detection) "
         "(lock: %s)",
         entity.capitalize(),
         args.sensitivity,
         " +toddler" if args.toddler else "",
         thresh["min_keys"], thresh["min_rate"], thresh["spread"] * 100,
         thresh["min_paw"], HOLD_MIN_REPEATS,
+        args.pause_secs,
         "enabled" if args.lock else "disabled",
     )
 
@@ -549,7 +559,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
 # ── Linux backend ─────────────────────────────────────────────────────────────
 
-_linux_keyboards: list = []   # populated by run_linux()
+_linux_keyboards: list = []   # populated by run_linux(); used by _pause_input_thread
 
 
 def run_linux(args) -> None:
@@ -571,6 +581,14 @@ def run_linux(args) -> None:
     # can keep reading evdev events without blocking.
     threading.Thread(target=_detection_engine, args=(eq, args), daemon=True).start()
 
+    # Wire SIGUSR1 → force_release from the main thread (only place allowed).
+    # Give the engine thread a moment to register its _force_release callback.
+    def _sigusr1(signum, frame):
+        if _engine_force_release_ref:
+            log.info("⌨️  SIGUSR1 — releasing grab early")
+            _engine_force_release_ref[0]("SIGUSR1")
+    signal.signal(signal.SIGUSR1, _sigusr1)
+
     async def watch(dev):
         async for event in dev.async_read_loop():
             if event.type != ecodes.EV_KEY:
@@ -590,6 +608,9 @@ def run_linux(args) -> None:
 
 
 # ── Windows backend ───────────────────────────────────────────────────────────
+
+_win_suppress_event = threading.Event()   # set → suppress all key events
+
 
 def run_windows(args) -> None:
     """
@@ -683,6 +704,8 @@ def run_windows(args) -> None:
             t.cancel()
 
     def on_press(key):
+        if _win_suppress_event.is_set():
+            return False   # suppress the event system-wide
         mapped = VK_MAP.get(_vk(key), _vk(key))
         eq.put(("down", mapped))
         _schedule_hold(mapped)
