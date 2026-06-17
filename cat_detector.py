@@ -19,10 +19,12 @@ Toddler mode (--toddler):
   a toddler uses (2–3 simultaneous keys, fast rate, little spread) is caught
   before any damage is done.  Screen locks immediately (no 2-second delay).
 
-Screen lock is ON by default.  Use --no-lock to disable it.
+Screen lock is OFF by default.  Use --lock to enable it.
+By default cat-detector just freezes keyboard input on detection and waits
+for you to press Ctrl+Alt+K to unfreeze — no lock screen, no logout.
 
 Usage:
-  python cat_detector.py [--no-lock] [--sound] [--toddler]
+  python cat_detector.py [--lock] [--sound] [--toddler]
                          [--sensitivity medium] [--pause-secs 10]
                          [--confirm]
 """
@@ -357,27 +359,32 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     grab_active    = False
 
     # ── Input-pause helper ────────────────────────────────────────────────────
-    def _pause_input_thread():
+    def _pause_input_thread(already_grabbed: list = None):
         nonlocal grab_active
-        if grab_active:
-            return
+        if already_grabbed is None:
+            already_grabbed = []
         confirm_mode = getattr(args, "confirm", False)
-        if not confirm_mode and args.pause_secs <= 0:
-            return
-        grab_active = True
+        # grab_active was already set by _fire before calling this thread.
+        # If called standalone (edge case), set it now.
+        if not grab_active:
+            if not confirm_mode and args.pause_secs <= 0:
+                return
+            grab_active = True
+
         notify_pause(args.pause_secs, confirm=confirm_mode)
 
         if confirm_mode:
-            _pause_until_confirmed()
+            _pause_until_confirmed(already_grabbed)
         elif _PLATFORM == "Linux":
-            # timed grab
-            grabbed = []
+            # timed grab — extend already_grabbed with any missed devices
+            grabbed = list(already_grabbed)
             for kb in _linux_keyboards:
-                try:
-                    kb.grab()
-                    grabbed.append(kb)
-                except OSError:
-                    pass
+                if kb not in grabbed:
+                    try:
+                        kb.grab()
+                        grabbed.append(kb)
+                    except OSError:
+                        pass
             if grabbed:
                 log.info("⌨️  Input paused — keyboard grabbed for %ds", args.pause_secs)
             time.sleep(args.pause_secs)
@@ -387,31 +394,31 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
                 except OSError:
                     pass
         else:
-            # Windows timed
-            _win_suppress_event.set()
+            # Windows timed — already suppressed by _fire
             time.sleep(args.pause_secs)
             _win_suppress_event.clear()
 
         grab_active = False
         log.info("⌨️  Input resumed")
 
-    def _pause_until_confirmed():
+    def _pause_until_confirmed(already_grabbed: list = None):
         """Hold keyboard grab until the user presses the confirm combo."""
         import threading as _t
+        if already_grabbed is None:
+            already_grabbed = []
         release_event = _t.Event()
 
         if _PLATFORM == "Linux":
-            # Grab all keyboards.  Open a *separate* non-grabbed fd on each
-            # device so we can still read the confirm combo while grabbed.
+            # Use the already-grabbed list from _fire; grab any missed devices.
             import select as _select
-            grabbed = []
-            confirm_fds = {}   # fd -> InputDevice path
+            grabbed = list(already_grabbed)
             for kb in _linux_keyboards:
-                try:
-                    kb.grab()
-                    grabbed.append(kb)
-                except OSError:
-                    pass
+                if kb not in grabbed:
+                    try:
+                        kb.grab()
+                        grabbed.append(kb)
+                    except OSError:
+                        pass
             # Open fresh ungrabbed fds for reading the confirm combo
             for kb in grabbed:
                 try:
@@ -492,24 +499,65 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
             confirm_listener.stop()
             _win_suppress_event.clear()
 
+    def _grab_now_linux() -> list:
+        """Synchronously grab all keyboards on Linux. Returns grabbed list."""
+        grabbed = []
+        for kb in _linux_keyboards:
+            try:
+                kb.grab()
+                grabbed.append(kb)
+            except OSError:
+                pass
+        return grabbed
+
     def _fire(reason: str, **log_kw):
-        nonlocal last_detection
+        nonlocal last_detection, grab_active
         last_detection = time.monotonic()
         msg = random.choice(messages)
         log.warning("%s DETECTED (%s)! %s",
                     entity.upper(), reason,
                     " ".join(f"{k}={v}" for k, v in log_kw.items()))
+
+        # ── STEP 1: grab keyboard IMMEDIATELY so cat cannot type on lock screen ──
+        # This MUST happen before lock_screen() is called.  Without this the cat
+        # continues typing login attempts (or worse) on the lock screen while the
+        # grab thread is still starting up.
+        pre_grabbed: list = []
+        if not grab_active:
+            grab_active = True
+            if _PLATFORM == "Linux":
+                pre_grabbed = _grab_now_linux()
+                if pre_grabbed:
+                    log.info("⌨️  Keyboard grabbed BEFORE lock — cat cannot type on lock screen")
+            elif _PLATFORM == "Windows":
+                _win_suppress_event.set()
+
+        # ── STEP 2: notify and optionally play sound ──────────────────────────
         notify(msg)
         if args.sound:
             play_meow()
+
+        # ── STEP 3: lock the screen — keyboard is already blocked ─────────────
         if args.lock:
-            if lock_delay:
+            # No grace period delay when confirm mode is active — the keyboard
+            # is already grabbed so there is nothing for the cat to type.
+            confirm_mode = getattr(args, "confirm", False)
+            if lock_delay and not confirm_mode:
                 time.sleep(lock_delay)
             lock_screen()
+
+        # ── STEP 4: clear event buffers ───────────────────────────────────────
         key_times.clear()
         key_hold_times.clear()
         keys_currently_held.clear()
-        _threading.Thread(target=_pause_input_thread, daemon=True).start()
+
+        # ── STEP 5: hand off to pause thread which manages release ────────────
+        # Pass the already-grabbed device list so the thread does not re-grab.
+        _threading.Thread(
+            target=_pause_input_thread,
+            args=(pre_grabbed,),
+            daemon=True,
+        ).start()
 
     log.info(
         "%s detector running | sensitivity=%s%s "
@@ -794,11 +842,15 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    # --lock is the DEFAULT; use --no-lock to disable
+    # --no-lock is the DEFAULT; use --lock to enable screen locking
+    parser.add_argument(
+        "--lock", dest="lock", action="store_true",
+        default=False,
+        help="Lock the screen on detection (off by default — keyboard is frozen instead)",
+    )
     parser.add_argument(
         "--no-lock", dest="lock", action="store_false",
-        default=True,
-        help="Disable automatic screen lock on detection (lock is ON by default)",
+        help="Disable screen lock (already the default; provided for compatibility)",
     )
     parser.add_argument(
         "--sound", action="store_true",
