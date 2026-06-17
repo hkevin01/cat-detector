@@ -100,6 +100,8 @@ TODDLER_MESSAGES = [
 
 WINDOW_SECS   = 2.0   # sliding time window — shorter = less key accumulation from fast typing
 COOLDOWN_SECS = 45    # silence after a detection
+# Legacy compatibility constant; freeze/grab behavior has been removed.
+GRAB_SECS_DEFAULT = 30
 
 # Same-key streak detection — "ffffff" is a cat, not a word
 STREAK_WINDOW_SECS = 1.0  # look-back for rapid repeated taps of the same key
@@ -629,6 +631,10 @@ def main() -> None:
     parser.add_argument(
         "--sensitivity", choices=["low", "medium", "high"], default="medium",
         help="Detection sensitivity for cat mode (default: medium; ignored in --toddler)",
+    )
+    parser.add_argument(
+        "--pause-secs", type=int, default=GRAB_SECS_DEFAULT, metavar="N",
+        help="Deprecated compatibility option (no-op). Input grabbing is disabled.",
     )
     args = parser.parse_args()
     run(args)
