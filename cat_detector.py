@@ -9,10 +9,6 @@ Detection modes:
   HOLD/SIT       — kernel autorepeat flood (Linux) / rapid same-key repeat (Windows)
   PAW PRESS      — 3–5+ non-modifier keys physically held at the same moment
   STREAK         — same key tapped 6+ times within 1 second ("ffffff")
-  INPUT PAUSE    — after detection, keyboard is frozen for --pause-secs seconds
-                   (default 30s).  To release early from another terminal:
-                     systemctl --user kill -s USR1 cat-detector.service
-                   or:  kill -USR1 $(cat /tmp/cat-detector.pid)
 
 Toddler mode (--toddler):
   Dramatically lowers every threshold so that the frantic, palm-slapping style
@@ -23,7 +19,7 @@ Screen lock is OFF by default.  Use --lock to enable it.
 
 Usage:
   python cat_detector.py [--lock] [--sound] [--toddler]
-                         [--sensitivity medium] [--pause-secs 30]
+                                                 [--sensitivity medium]
 """
 
 import argparse
@@ -240,26 +236,6 @@ def notify(message: str, urgency: str = "critical"):
             log.warning("winotify unavailable — printed to console")
 
 
-def notify_pause(pause_secs: int):
-    """Notify the user that keyboard input is frozen."""
-    msg = (f"Keyboard frozen for {pause_secs}s. "
-           "To release early: systemctl --user kill -s USR1 cat-detector.service")
-    if _PLATFORM == "Linux":
-        if shutil.which("notify-send"):
-            subprocess.run(
-                ["notify-send", "-u", "normal", "-t", str(pause_secs * 1000),
-                 "-i", "input-keyboard", "⌨️  Keyboard frozen", msg],
-                check=False,
-            )
-    elif _PLATFORM == "Windows":
-        try:
-            from winotify import Notification
-            Notification(app_id="cat-detector",
-                         title="⌨️  Keyboard frozen", msg=msg).show()
-        except Exception:
-            pass
-
-
 # ── Platform-agnostic sound ───────────────────────────────────────────────────
 
 def play_meow():
@@ -322,8 +298,6 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
     The same logic runs on both Linux and Windows; only the event source differs.
     """
-    import threading as _threading
-
     thresh = TODDLER_SENSITIVITY if args.toddler else SENSITIVITY[args.sensitivity]
     streak_window = TODDLER_STREAK_WINDOW if args.toddler else STREAK_WINDOW_SECS
     streak_min    = TODDLER_STREAK_MIN    if args.toddler else STREAK_MIN_COUNT
@@ -335,89 +309,14 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     keys_currently_held: set[int]         = set()
     last_detection = 0.0
-    grab_active    = False
-
-    # _grabbed holds the list of currently-grabbed devices so the SIGUSR1
-    # handler and the watchdog can both call _force_release() safely.
-    _grabbed: list = []
-
-    def _force_release(reason: str = "forced"):
-        """Ungrab every keyboard unconditionally. Safe to call multiple times."""
-        nonlocal grab_active, _grabbed
-        devs, _grabbed = _grabbed, []
-        for kb in devs:
-            try:
-                kb.ungrab()
-            except OSError:
-                pass
-        if _PLATFORM == "Windows":
-            _win_suppress_event.clear()
-        grab_active = False
-        log.warning("⌨️  Keyboard released (%s) — input restored", reason)
-
-    # Register _force_release so run_linux() can wire it to SIGUSR1
-    # (signal.signal must be called from the main thread, not here)
-    _engine_force_release_ref.append(_force_release)
-
-    # ── Input-pause: timed freeze with try/finally + watchdog ─────────────────
-    def _pause_input_thread(already_grabbed: list = None):
-        nonlocal grab_active, _grabbed
-        if args.pause_secs <= 0:
-            _force_release("pause disabled")
-            return
-
-        # Incorporate already-grabbed devices; grab any remaining ones
-        grabbed = list(already_grabbed or [])
-        if _PLATFORM == "Linux":
-            for kb in _linux_keyboards:
-                if kb not in grabbed:
-                    try:
-                        kb.grab()
-                        grabbed.append(kb)
-                    except OSError:
-                        pass
-        _grabbed = grabbed
-
-        notify_pause(args.pause_secs)
-        log.info("⌨️  Keyboard frozen for %ds", args.pause_secs)
-
-        # Hard deadline: always release by this time no matter what
-        deadline = time.monotonic() + args.pause_secs
-        try:
-            while time.monotonic() < deadline:
-                if not grab_active:   # SIGUSR1 already released
-                    return
-                time.sleep(0.25)
-        except Exception as exc:
-            log.error("⌨️  Pause thread error: %s — releasing immediately", exc)
-        finally:
-            # This block runs even if the thread is somehow interrupted.
-            # It is the ONLY place ungrab happens — no other code path ungrabs.
-            _force_release("timer expired")
 
     def _fire(reason: str, **log_kw):
-        nonlocal last_detection, grab_active, _grabbed
+        nonlocal last_detection
         last_detection = time.monotonic()
         msg = random.choice(messages)
         log.warning("%s DETECTED (%s)! %s",
                     entity.upper(), reason,
                     " ".join(f"{k}={v}" for k, v in log_kw.items()))
-
-        # Grab FIRST — before notify, before anything else.
-        # Cat gets zero keystrokes from this point forward.
-        pre_grabbed: list = []
-        if not grab_active:
-            grab_active = True
-            if _PLATFORM == "Linux":
-                for kb in _linux_keyboards:
-                    try:
-                        kb.grab()
-                        pre_grabbed.append(kb)
-                    except OSError:
-                        pass
-                _grabbed = pre_grabbed
-            elif _PLATFORM == "Windows":
-                _win_suppress_event.set()
 
         notify(msg)
         if args.sound:
@@ -429,19 +328,6 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         key_times.clear()
         key_hold_times.clear()
         keys_currently_held.clear()
-
-        t = _threading.Thread(target=_pause_input_thread,
-                              args=(pre_grabbed,), daemon=True)
-        t.start()
-
-        # Watchdog: if the pause thread hangs beyond pause_secs + 10s,
-        # force-release from the main detection thread.
-        def _watchdog():
-            t.join(timeout=args.pause_secs + 10)
-            if grab_active:
-                log.error("⌨️  Watchdog: pause thread overran — force releasing")
-                _force_release("watchdog")
-        _threading.Thread(target=_watchdog, daemon=True).start()
 
     log.info(
         "%s detector running | sensitivity=%s%s "
@@ -554,7 +440,6 @@ _linux_keyboards: list = []   # populated by run_linux()
 
 def run_linux(args) -> None:
     import asyncio
-    import signal
 
     global _linux_keyboards
     _linux_keyboards = find_keyboards()
@@ -696,8 +581,7 @@ def run_windows(args) -> None:
     threading.Thread(target=_detection_engine, args=(eq, args), daemon=True).start()
 
     log.info("Listening for keyboard events via pynput (Windows)…")
-    # suppress=False here; input suppression during grab is handled via
-    # _win_suppress_event → returning False from on_press
+    # suppress=False so normal keyboard behaviour is unchanged.
     with _pynput_kb.Listener(on_press=on_press, on_release=on_release) as listener:
         listener.join()
 
@@ -724,7 +608,7 @@ def main() -> None:
     parser.add_argument(
         "--lock", dest="lock", action="store_true",
         default=False,
-        help="Lock the screen on detection (off by default — keyboard is frozen instead)",
+        help="Lock the screen on detection (off by default)",
     )
     parser.add_argument(
         "--no-lock", dest="lock", action="store_false",
@@ -745,15 +629,6 @@ def main() -> None:
     parser.add_argument(
         "--sensitivity", choices=["low", "medium", "high"], default="medium",
         help="Detection sensitivity for cat mode (default: medium; ignored in --toddler)",
-    )
-    parser.add_argument(
-        "--pause-secs", type=int, default=GRAB_SECS_DEFAULT, metavar="N",
-        help=(
-            f"Seconds to freeze keyboard input after detection (default: {GRAB_SECS_DEFAULT}; "
-            "0 = disabled). Keyboard is grabbed exclusively for this duration then "
-            "automatically released. To release early: "
-            "systemctl --user kill -s USR1 cat-detector.service"
-        ),
     )
     args = parser.parse_args()
     run(args)
