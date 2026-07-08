@@ -91,8 +91,8 @@ Get-ChildItem "dist\*.exe" | ForEach-Object {
 }
 Write-Host ""
 Write-Host "Usage examples:" -ForegroundColor White
-Write-Host "  dist\cat-detector.exe                         # default (lock ON, medium sensitivity)"
+Write-Host "  dist\cat-detector.exe                         # default (lock OFF, medium sensitivity)"
 Write-Host "  dist\cat-detector.exe --sensitivity high      # dainty steppers"
 Write-Host "  dist\cat-detector.exe --toddler               # toddler mode"
-Write-Host "  dist\cat-detector.exe --no-lock --sound       # notification + meow, no lock"
+Write-Host "  dist\cat-detector.exe --lock --sound          # lock + notification + meow"
 Write-Host ""

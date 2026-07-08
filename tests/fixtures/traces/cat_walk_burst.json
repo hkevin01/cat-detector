@@ -1,0 +1,31 @@
+{
+  "name": "cat_walk_burst",
+  "events": [
+    {"kind": "down", "code": 2, "delay": 0.01},
+    {"kind": "down", "code": 3, "delay": 0.01},
+    {"kind": "down", "code": 4, "delay": 0.01},
+    {"kind": "down", "code": 5, "delay": 0.01},
+    {"kind": "down", "code": 6, "delay": 0.01},
+    {"kind": "down", "code": 7, "delay": 0.01},
+    {"kind": "down", "code": 8, "delay": 0.01},
+    {"kind": "down", "code": 9, "delay": 0.01},
+    {"kind": "down", "code": 10, "delay": 0.01},
+    {"kind": "down", "code": 11, "delay": 0.01},
+    {"kind": "down", "code": 16, "delay": 0.01},
+    {"kind": "down", "code": 17, "delay": 0.01},
+    {"kind": "down", "code": 18, "delay": 0.01},
+    {"kind": "down", "code": 19, "delay": 0.01},
+    {"kind": "down", "code": 20, "delay": 0.01},
+    {"kind": "down", "code": 21, "delay": 0.01},
+    {"kind": "down", "code": 22, "delay": 0.01},
+    {"kind": "down", "code": 23, "delay": 0.01},
+    {"kind": "down", "code": 30, "delay": 0.01},
+    {"kind": "down", "code": 31, "delay": 0.01},
+    {"kind": "down", "code": 32, "delay": 0.01},
+    {"kind": "down", "code": 33, "delay": 0.01},
+    {"kind": "down", "code": 34, "delay": 0.01},
+    {"kind": "down", "code": 35, "delay": 0.01},
+    {"kind": "down", "code": 36, "delay": 0.01},
+    {"kind": "down", "code": 37, "delay": 0.01}
+  ]
+}

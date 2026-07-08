@@ -13,7 +13,6 @@ Patterns tested:
   • Password entry (random chars but sequential, not simultaneous)
 """
 import time
-import pytest
 
 from tests.conftest import EngineHarness
 

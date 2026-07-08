@@ -6,7 +6,6 @@ EngineHarness.  A detection fires → notify() is called → harness records it.
 Tests assert 0 or ≥1 detections within a short flush window.
 """
 import time
-import pytest
 
 from tests.conftest import EngineHarness
 

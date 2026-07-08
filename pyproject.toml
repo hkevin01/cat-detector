@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cat-detector"
@@ -25,7 +25,7 @@ cat-detector = "cat_detector:main"
 [project.optional-dependencies]
 linux   = ["evdev>=1.6"]
 windows = ["pynput>=1.7", "winotify>=1.1"]
-dev     = ["pytest", "ruff"]
+dev     = ["pytest", "ruff", "hypothesis>=6.0"]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,21 @@
+{
+  "name": "human_typing_edge",
+  "events": [
+    {"kind": "down", "code": 30, "delay": 0.03},
+    {"kind": "up", "code": 30, "delay": 0.02},
+    {"kind": "down", "code": 31, "delay": 0.03},
+    {"kind": "up", "code": 31, "delay": 0.02},
+    {"kind": "down", "code": 32, "delay": 0.03},
+    {"kind": "up", "code": 32, "delay": 0.02},
+    {"kind": "down", "code": 33, "delay": 0.03},
+    {"kind": "up", "code": 33, "delay": 0.02},
+    {"kind": "down", "code": 34, "delay": 0.03},
+    {"kind": "up", "code": 34, "delay": 0.02},
+    {"kind": "down", "code": 14, "delay": 0.02},
+    {"kind": "up", "code": 14, "delay": 0.02},
+    {"kind": "down", "code": 35, "delay": 0.03},
+    {"kind": "up", "code": 35, "delay": 0.02},
+    {"kind": "down", "code": 36, "delay": 0.03},
+    {"kind": "up", "code": 36, "delay": 0.02}
+  ]
+}

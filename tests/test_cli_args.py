@@ -2,13 +2,15 @@
 CLI / argparse tests.
 
 Verifies that argument defaults and flag behaviour match the specification:
-  • --lock is ON by default (default=True)
+    • --lock is OFF by default
+    • --lock enables lock mode
   • --no-lock disables it
   • --toddler flag enables toddler mode
   • --sensitivity accepts low / medium / high
   • --pause-secs default is GRAB_SECS_DEFAULT
   • Unknown flags produce an error exit
 """
+import pathlib
 import subprocess
 import sys
 
@@ -16,21 +18,18 @@ import pytest
 
 
 def _parse(cd, argv):
-    """Run the argument parser with the given argv list."""
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--no-lock", dest="lock", action="store_false", default=True)
-    parser.add_argument("--sound", action="store_true")
-    parser.add_argument("--toddler", action="store_true")
-    parser.add_argument("--sensitivity", choices=["low", "medium", "high"], default="medium")
-    parser.add_argument("--pause-secs", type=int, default=cd.GRAB_SECS_DEFAULT, dest="pause_secs")
+    """Run the production argument parser with the given argv list."""
+    parser = cd.build_parser()
     return parser.parse_args(argv)
 
 
 class TestDefaultArgs:
-    def test_lock_on_by_default(self, cd):
+    def test_lock_off_by_default(self, cd):
         args = _parse(cd, [])
+        assert args.lock is False
+
+    def test_lock_enabled_with_flag(self, cd):
+        args = _parse(cd, ["--lock"])
         assert args.lock is True
 
     def test_no_lock_disables_lock(self, cd):
@@ -85,26 +84,15 @@ class TestSensitivityArgChoices:
         assert result.returncode != 0
 
 
-import pathlib
-
-
 class TestHelpOutput:
-        """Test that argparse emits expected flags via the real parser."""
+    """Test parser flags using the production parser."""
 
-        def test_help_shows_toddler_flag(self, cd):
-            """The argparse help text must mention --toddler."""
-            import io, contextlib
-            buf = io.StringIO()
-            with contextlib.suppress(SystemExit):
-                with contextlib.redirect_stdout(buf):
-                    cd.main.__globals__["argparse"].ArgumentParser(
-                        description="Detect when a cat (or toddler) walks on your keyboard"
-                    ).parse_args(["--help"])
-            # Easier: just assert the flag is on the parser we build with _parse()
-            args = _parse(cd, ["--toddler"])
-            assert args.toddler is True
+    def test_help_shows_toddler_flag(self, cd):
+        """The argparse help text must mention --toddler."""
+        help_text = cd.build_parser().format_help()
+        assert "--toddler" in help_text
 
-        def test_no_lock_is_a_valid_flag(self, cd):
-            """--no-lock must be accepted and set lock=False."""
-            args = _parse(cd, ["--no-lock"])
-            assert args.lock is False
+    def test_no_lock_is_a_valid_flag(self, cd):
+        """--no-lock must be accepted and set lock=False."""
+        args = _parse(cd, ["--no-lock"])
+        assert args.lock is False

@@ -24,6 +24,7 @@ Usage:
 
 import argparse
 import collections
+import json
 import logging
 import os
 import platform
@@ -35,6 +36,9 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 _PLATFORM = platform.system()   # "Linux" | "Windows" | "Darwin"
 
@@ -79,6 +83,24 @@ SENSITIVITY = {
     "medium": {"min_keys": 24, "min_rate": 11.0, "spread": 0.66, "min_paw": 4},
     "high":   {"min_keys": 18, "min_rate":  9.0, "spread": 0.55, "min_paw": 3},
 }
+
+WALK_SCORE_WEIGHTS = {
+    "unique": 0.45,
+    "rate": 0.35,
+    "spread": 0.20,
+}
+
+WALK_SCORE_MIN = {
+    "low": 1.02,
+    "medium": 1.03,
+    "high": 1.05,
+    "toddler": 1.00,
+}
+
+BASELINE_WARMUP_SAMPLES = 80
+BASELINE_MARGIN = 0.04
+BASELINE_MAX_SHIFT = 0.20
+BASELINE_SAMPLE_CAP = 600
 
 # Toddler mode: much looser thresholds.
 # A toddler palm-slams keys in rapid bursts with minimal spread — 2–3 keys held
@@ -211,6 +233,163 @@ def zone_spread(keys: set) -> float:
     return touched / len(ZONE_KEYS)
 
 
+def walk_confidence(unique_keys: int, rate: float, spread: float, thresh: dict) -> float:
+    """
+    Weighted normalized score for walk/burst confidence.
+
+    Each component is measured as ratio-to-threshold and blended with
+    deterministic weights. A score near 1.0 means "barely at threshold".
+    Values > 1.0 indicate stronger evidence of paw-walking behavior.
+    """
+    unique_ratio = unique_keys / max(1, thresh["min_keys"])
+    rate_ratio = rate / max(0.001, thresh["min_rate"])
+    spread_ratio = spread / max(0.001, thresh["spread"])
+    return (
+        WALK_SCORE_WEIGHTS["unique"] * unique_ratio
+        + WALK_SCORE_WEIGHTS["rate"] * rate_ratio
+        + WALK_SCORE_WEIGHTS["spread"] * spread_ratio
+    )
+
+
+def cooldown_allows(now: float, last_detection: float, cooldown_secs: float = COOLDOWN_SECS) -> bool:
+    """Return True when enough time has passed since the previous detection."""
+    return (now - last_detection) > cooldown_secs
+
+
+@dataclass(frozen=True)
+class WalkMetrics:
+    unique_keys: int
+    rate: float
+    spread: float
+
+
+@dataclass(frozen=True)
+class DetectionRecord:
+    timestamp_utc: str
+    entity: str
+    reason: str
+    sensitivity: str
+    toddler_mode: bool
+    metrics: dict
+    walk_score: float | None = None
+    walk_threshold: float | None = None
+
+
+@dataclass
+class AdaptiveBaselineCalibrator:
+    static_min: float
+    warmup: int = BASELINE_WARMUP_SAMPLES
+    margin: float = BASELINE_MARGIN
+    max_shift: float = BASELINE_MAX_SHIFT
+    sample_cap: int = BASELINE_SAMPLE_CAP
+    samples: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLE_CAP))
+
+    def observe(self, score: float) -> None:
+        self.samples.append(float(score))
+
+    def threshold(self) -> float:
+        if len(self.samples) < self.warmup:
+            return self.static_min
+        ordered = sorted(self.samples)
+        idx = int(0.95 * (len(ordered) - 1))
+        p95 = ordered[idx]
+        adaptive = p95 + self.margin
+        upper = self.static_min + self.max_shift
+        return max(self.static_min, min(adaptive, upper))
+
+
+def _event_log_path() -> Path:
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_home / "cat-detector" / "detections.jsonl"
+
+
+def record_detection_event(record: DetectionRecord) -> None:
+    """Append a structured detection event record for longitudinal analysis."""
+    try:
+        path = _event_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(record.__dict__, sort_keys=True) + "\n")
+    except Exception as exc:
+        log.warning("Failed to write detection event record: %s", exc)
+
+
+def dispatch_detection_actions(args, message: str) -> None:
+    """Execute side effects for a detection event."""
+    notify(message)
+    if args.sound:
+        play_meow()
+    if args.lock:
+        lock_screen()
+
+
+def compute_walk_metrics(key_times: dict, now: float) -> tuple[set[int], WalkMetrics]:
+    """Pure walk metric computation from timestamp buffers."""
+    cutoff = now - WINDOW_SECS
+    active_keys: set[int] = set()
+    for code, times in key_times.items():
+        while times and times[0] < cutoff:
+            times.popleft()
+        if times:
+            active_keys.add(code)
+    total_events = sum(len(q) for q in key_times.values() if q)
+    unique_keys = len(active_keys)
+    rate = total_events / WINDOW_SECS
+    spread = zone_spread(active_keys)
+    return active_keys, WalkMetrics(unique_keys=unique_keys, rate=rate, spread=spread)
+
+
+def hold_detection_signal(key_hold_times: dict, code: int, now: float, last_detection: float) -> dict | None:
+    """Pure hold/sit detector over repeat timestamps."""
+    if code in HUMAN_HOLD_KEYS:
+        return None
+    key_hold_times[code].append(now)
+    hold_cutoff = now - HOLD_WINDOW_SECS
+    active_held = 0
+    max_repeats = 0
+    for htimes in key_hold_times.values():
+        while htimes and htimes[0] < hold_cutoff:
+            htimes.popleft()
+        n = len(htimes)
+        if n >= HOLD_MULTI_MIN:
+            active_held += 1
+        if n > max_repeats:
+            max_repeats = n
+    if (
+        (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
+        and cooldown_allows(now, last_detection)
+    ):
+        return {"held_keys": active_held, "max_repeats": max_repeats}
+    return None
+
+
+def paw_detection_signal(
+    keys_currently_held: set[int], thresh: dict, now: float, last_detection: float
+) -> tuple[str, dict] | None:
+    """Pure simultaneous-key detector for paw/toddler slams."""
+    paw_keys = keys_currently_held - MODIFIER_KEYS - HUMAN_HOLD_KEYS
+    enter_paw = KEY_ENTER in paw_keys and len(paw_keys - {KEY_ENTER}) >= ENTER_PAW_MIN
+    if (enter_paw or len(paw_keys) >= thresh["min_paw"]) and cooldown_allows(now, last_detection):
+        reason = "enter+simultaneous" if enter_paw else "paw press"
+        return reason, {"simultaneous": len(paw_keys), "keys": sorted(paw_keys)}
+    return None
+
+
+def streak_detection_signal(
+    key_times: dict,
+    code: int,
+    now: float,
+    streak_window: float,
+    streak_min: int,
+    last_detection: float,
+) -> dict | None:
+    """Pure same-key streak detector."""
+    recent = [t for t in key_times[code] if t >= now - streak_window]
+    if len(recent) >= streak_min and cooldown_allows(now, last_detection):
+        return {"key": code, "count": len(recent), "window": f"{streak_window:.1f}s"}
+    return None
+
+
 # ── Platform-agnostic notification ────────────────────────────────────────────
 
 def notify(message: str, urgency: str = "critical"):
@@ -303,29 +482,36 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     thresh = TODDLER_SENSITIVITY if args.toddler else SENSITIVITY[args.sensitivity]
     streak_window = TODDLER_STREAK_WINDOW if args.toddler else STREAK_WINDOW_SECS
     streak_min    = TODDLER_STREAK_MIN    if args.toddler else STREAK_MIN_COUNT
-    lock_delay    = TODDLER_LOCK_DELAY    if args.toddler else 2
     messages      = TODDLER_MESSAGES      if args.toddler else CAT_MESSAGES
     entity        = "toddler" if args.toddler else "cat"
+    walk_score_min = WALK_SCORE_MIN["toddler"] if args.toddler else WALK_SCORE_MIN[args.sensitivity]
+    baseline = AdaptiveBaselineCalibrator(static_min=walk_score_min)
 
     key_times:           dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     keys_currently_held: set[int]         = set()
     last_detection = 0.0
 
-    def _fire(reason: str, **log_kw):
+    def _fire(reason: str, walk_score: float | None = None, walk_threshold: float | None = None, **log_kw):
         nonlocal last_detection
         last_detection = time.monotonic()
         msg = random.choice(messages)
         log.warning("%s DETECTED (%s)! %s",
                     entity.upper(), reason,
                     " ".join(f"{k}={v}" for k, v in log_kw.items()))
+        record = DetectionRecord(
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),
+            entity=entity,
+            reason=reason,
+            sensitivity=args.sensitivity,
+            toddler_mode=bool(args.toddler),
+            metrics=log_kw,
+            walk_score=walk_score,
+            walk_threshold=walk_threshold,
+        )
+        record_detection_event(record)
 
-        notify(msg)
-        if args.sound:
-            play_meow()
-        # lock is OFF by default — only fires if user explicitly passes --lock
-        if args.lock:
-            lock_screen()
+        dispatch_detection_actions(args, msg)
 
         key_times.clear()
         key_hold_times.clear()
@@ -359,80 +545,61 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
         # ── Hold / sit (autorepeat flood) ────────────────────────────────────
         if kind == "hold":
-            if code not in HUMAN_HOLD_KEYS:
-                key_hold_times[code].append(now)
-                hold_cutoff = now - HOLD_WINDOW_SECS
-                active_held = max_repeats = 0
-                for htimes in key_hold_times.values():
-                    while htimes and htimes[0] < hold_cutoff:
-                        htimes.popleft()
-                    n = len(htimes)
-                    if n >= HOLD_MULTI_MIN:
-                        active_held += 1
-                    if n > max_repeats:
-                        max_repeats = n
-                if (
-                    (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
-                    and (now - last_detection) > COOLDOWN_SECS
-                ):
-                    _fire("sitting/standing",
-                          held_keys=active_held, max_repeats=max_repeats)
+            hold_metrics = hold_detection_signal(key_hold_times, code, now, last_detection)
+            if hold_metrics is not None:
+                _fire("sitting/standing", **hold_metrics)
             continue
 
         # key_down from here ──────────────────────────────────────────────────
         keys_currently_held.add(code)
 
         # ── Paw-press / toddler-slam detection ───────────────────────────────
-        paw_keys = keys_currently_held - MODIFIER_KEYS - HUMAN_HOLD_KEYS
-        enter_paw = (
-            KEY_ENTER in paw_keys
-            and len(paw_keys - {KEY_ENTER}) >= ENTER_PAW_MIN
-        )
-        if (
-            (enter_paw or len(paw_keys) >= thresh["min_paw"])
-            and (now - last_detection) > COOLDOWN_SECS
-        ):
-            reason = "enter+simultaneous" if enter_paw else "paw press"
-            _fire(reason, simultaneous=len(paw_keys), keys=sorted(paw_keys))
+        paw_signal = paw_detection_signal(keys_currently_held, thresh, now, last_detection)
+        if paw_signal is not None:
+            reason, paw_metrics = paw_signal
+            _fire(reason, **paw_metrics)
             continue
 
         # ── Streak detection ─────────────────────────────────────────────────
         if code not in HUMAN_HOLD_KEYS and code not in MODIFIER_KEYS:
             key_times[code].append(now)
-            recent = [t for t in key_times[code] if t >= now - streak_window]
-            if (
-                len(recent) >= streak_min
-                and (now - last_detection) > COOLDOWN_SECS
-            ):
-                _fire("key streak", key=code, count=len(recent),
-                      window=f"{streak_window:.1f}s")
+            streak_metrics = streak_detection_signal(
+                key_times, code, now, streak_window, streak_min, last_detection
+            )
+            if streak_metrics is not None:
+                _fire("key streak", **streak_metrics)
                 continue
         else:
             key_times[code].append(now)
 
         # ── Walk / burst detection ────────────────────────────────────────────
-        cutoff = now - WINDOW_SECS
-        active_keys: set[int] = set()
-        for c, times in key_times.items():
-            while times and times[0] < cutoff:
-                times.popleft()
-            if times:
-                active_keys.add(c)
-
-        total_events = sum(len(q) for q in key_times.values() if q)
-        unique_keys  = len(active_keys)
-        rate         = total_events / WINDOW_SECS
-        spread       = zone_spread(active_keys)
+        active_keys, metrics = compute_walk_metrics(key_times, now)
+        score = walk_confidence(metrics.unique_keys, metrics.rate, metrics.spread, thresh)
+        adaptive_min = baseline.threshold()
 
         if (
-            unique_keys >= thresh["min_keys"]
-            and rate     >= thresh["min_rate"]
-            and spread   >= thresh["spread"]
+            metrics.unique_keys >= thresh["min_keys"]
+            and metrics.rate    >= thresh["min_rate"]
+            and metrics.spread  >= thresh["spread"]
             and not (active_keys & HUMAN_HOLD_KEYS)
-            and (now - last_detection) > COOLDOWN_SECS
+            and cooldown_allows(now, last_detection)
         ):
+            threshold = max(walk_score_min, adaptive_min)
+            if score < threshold:
+                continue
             _fire("walking",
-                  keys=unique_keys, rate=f"{rate:.1f}/s", spread=f"{spread*100:.0f}%")
+                  walk_score=score,
+                  walk_threshold=threshold,
+                  keys=metrics.unique_keys,
+                  rate=f"{metrics.rate:.1f}/s",
+                  spread=f"{metrics.spread*100:.0f}%",
+                  score=f"{score:.2f}",
+                  threshold=f"{threshold:.2f}")
+            continue
+
+        # Calibrate against likely-human windows conservatively.
+        if not (active_keys & HUMAN_HOLD_KEYS) and score < walk_score_min:
+            baseline.observe(score)
 
 
 # ── Linux backend ─────────────────────────────────────────────────────────────
@@ -600,7 +767,8 @@ def run(args) -> None:
         sys.exit(1)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the canonical argument parser used by main() and tests."""
     parser = argparse.ArgumentParser(
         description="Detect when a cat (or toddler) walks on your keyboard",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -636,6 +804,11 @@ def main() -> None:
         "--pause-secs", type=int, default=GRAB_SECS_DEFAULT, metavar="N",
         help="Deprecated compatibility option (no-op). Input grabbing is disabled.",
     )
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
     run(args)
 

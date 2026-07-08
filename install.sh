@@ -48,6 +48,6 @@ echo
 echo "=== Installation complete! ==="
 echo "  Test (cat mode) :  python3 cat_detector.py --sensitivity high"
 echo "  Test (toddler)  :  python3 cat_detector.py --toddler"
-echo "  No auto-lock    :  python3 cat_detector.py --no-lock"
+echo "  Enable locking  :  python3 cat_detector.py --lock"
 echo "  Status          :  systemctl --user status cat-detector"
 echo "  Logs            :  journalctl --user -u cat-detector -f"

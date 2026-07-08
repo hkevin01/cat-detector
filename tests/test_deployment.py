@@ -12,7 +12,6 @@ Categories:
 """
 import pathlib
 import subprocess
-import sys
 import tomllib
 
 import pytest
@@ -31,7 +30,7 @@ class TestImportSmoke:
         """Verify key public symbols exist."""
         required = [
             "zone_spread", "notify", "lock_screen", "play_meow",
-            "_detection_engine", "run", "main",
+            "walk_confidence", "_detection_engine", "run", "build_parser", "main",
             "SENSITIVITY", "TODDLER_SENSITIVITY", "HUMAN_HOLD_KEYS",
             "MODIFIER_KEYS", "ZONE_KEYS", "CAT_MESSAGES", "TODDLER_MESSAGES",
             "GRAB_SECS_DEFAULT", "COOLDOWN_SECS",
@@ -106,11 +105,10 @@ class TestServiceFile:
         assert "cat_detector" in service_text
 
     def test_exec_start_has_lock_flag(self, service_text):
-        # Lock is default ON; service should not pass --no-lock unless intended
+        # Lock is default OFF; service may include optional flags as needed.
         # The ExecStart line should invoke the script (with or without --sound etc.)
-        import re
         exec_line = next(
-            (l for l in service_text.splitlines() if l.startswith("ExecStart=")), ""
+            (line for line in service_text.splitlines() if line.startswith("ExecStart=")), ""
         )
         assert "cat_detector.py" in exec_line or "cat-detector" in exec_line
 

@@ -9,9 +9,6 @@ These tests verify:
   • Toddler messages are used (not cat messages)
   • Human-typing vetoes still apply
 """
-import time
-import pytest
-
 from tests.conftest import EngineHarness
 
 

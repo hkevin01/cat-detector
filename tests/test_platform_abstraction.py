@@ -5,11 +5,8 @@ These tests verify platform-specific code paths (notify, lock_screen,
 play_meow) without actually calling OS APIs.  Both Linux and Windows
 branches are exercised via mocking.
 """
-import subprocess
 import sys
 import unittest.mock as mock
-
-import pytest
 
 
 class TestNotifyLinux:

@@ -4,9 +4,6 @@ Unit tests — module-level constants and pure helper functions.
 These tests have zero I/O, no threading, and no platform dependencies.
 They run in milliseconds and guard against accidental constant drift.
 """
-import pytest
-
-
 # ── zone_spread ──────────────────────────────────────────────────────────
 
 class TestZoneSpread:

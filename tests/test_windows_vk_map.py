@@ -10,7 +10,6 @@ Because run_windows() is a nested function we extract its VK_MAP by
 running a limited inspection of the source text, or by driving a minimal
 stub.  Here we duplicate the critical VK entries and test them directly.
 """
-import inspect
 import pytest
 
 # Critical VK → evdev mappings that MUST be right for the detector to work
@@ -36,9 +35,7 @@ class TestCriticalVKMappings:
         The Windows VK_MAP table inside run_windows() must translate each
         critical virtual key code to the expected evdev code.
         """
-        # Extract VK_MAP by parsing the source  — find the dict literal
-        src = inspect.getsource(cd.run_windows)
-        # Easier: just assert the expected evdev codes are in HUMAN_HOLD_KEYS
+        # Assert the expected evdev codes are in HUMAN_HOLD_KEYS,
         # or MODIFIER_KEYS or KEY_ENTER as appropriate.
         known_sets = cd.HUMAN_HOLD_KEYS | cd.MODIFIER_KEYS | {cd.KEY_ENTER}
         assert expected_evdev in known_sets, (

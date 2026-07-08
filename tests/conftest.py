@@ -4,10 +4,12 @@ conftest.py — shared pytest fixtures and helpers for cat-detector tests.
 All fixtures that require evdev or pynput mock the import so the test suite
 runs on any platform (Linux, Windows, macOS) without hardware access.
 """
+import json
 import queue
 import sys
 import time
 import types
+from pathlib import Path
 import unittest.mock as mock
 
 import pytest
@@ -134,6 +136,16 @@ class EngineHarness:
     def flush(self, secs: float = 0.25):
         time.sleep(secs)
 
+    def replay(self, events, speed: float = 1.0):
+        """Replay a deterministic event trace into the engine."""
+        for ev in events:
+            kind = ev["kind"]
+            code = int(ev["code"])
+            delay = float(ev.get("delay", 0.0))
+            self._eq.put((kind, code))
+            if delay > 0:
+                time.sleep(delay / max(speed, 0.001))
+
 
 @pytest.fixture
 def engine_factory(cd):
@@ -141,3 +153,16 @@ def engine_factory(cd):
     def _make(**kw):
         return EngineHarness(cd, **kw)
     return _make
+
+
+@pytest.fixture
+def trace_loader():
+    """Load replay traces from tests/fixtures/traces/*.json."""
+    base = Path(__file__).parent / "fixtures" / "traces"
+
+    def _load(name: str):
+        with (base / f"{name}.json").open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return payload["events"]
+
+    return _load

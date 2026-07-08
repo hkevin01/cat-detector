@@ -1,46 +1,41 @@
-# cat-detector — Test Suite
+# cat-detector test suite
 
-## Structure
+## Coverage model
 
-| <sub>File</sub> | <sub>Type</sub> | <sub>Purpose</sub> |
-|------|------|---------|
-| <sub>`conftest.py`</sub> | <sub>Infrastructure</sub> | <sub>Platform stubs (evdev/pynput/winotify), `EngineHarness`, fixtures</sub> |
-| <sub>`test_unit_constants.py`</sub> | <sub>Unit</sub> | <sub>Constants, `zone_spread()`, key sets, messages</sub> |
-| <sub>`test_zone_spread_parametric.py`</sub> | <sub>Unit (parametric)</sub> | <sub>Every zone tested with a representative keycode</sub> |
-| <sub>`test_integration_detection.py`</sub> | <sub>Integration</sub> | <sub>Full engine: paw, streak, walk/burst, hold/sit, cooldown</sub> |
-| <sub>`test_regression_false_positives.py`</sub> | <sub>Regression</sub> | <sub>Human typing patterns that must NEVER trigger detection</sub> |
-| <sub>`test_toddler_mode.py`</sub> | <sub>Feature</sub> | <sub>`--toddler` thresholds, messages, zero lock delay</sub> |
-| <sub>`test_cli_args.py`</sub> | <sub>CLI</sub> | <sub>Argparse defaults — `--lock` on by default, `--no-lock`, `--toddler`</sub> |
-| <sub>`test_platform_abstraction.py`</sub> | <sub>Platform</sub> | <sub>`notify()`, `lock_screen()`, `play_meow()` on Linux & Windows stubs</sub> |
-| <sub>`test_deployment.py`</sub> | <sub>Deployment</sub> | <sub>Import smoke, `pyproject.toml`, service file, `install.sh`</sub> |
-| <sub>`test_windows_vk_map.py`</sub> | <sub>Platform</sub> | <sub>Windows VK→evdev translation correctness</sub> |
+The test suite validates five layers:
 
-## Running
+1. Pure unit logic
+- Constants and zone spread math.
+- Walk-confidence score properties.
 
-```bash
-# All tests (from project root)
-pytest
+2. Engine integration
+- End-to-end event stream processing through the shared detection engine.
+- Walk, streak, hold/sit, paw press, and cooldown behavior.
 
-# One file
-pytest tests/test_integration_detection.py -v
+3. Regression guardrails
+- Human typing and navigation patterns that must never trigger detection.
 
-# Only unit tests
-pytest tests/test_unit_constants.py tests/test_zone_spread_parametric.py -v
+4. Platform abstraction
+- Notification, lock, and audio side effects under Linux and Windows mocks.
 
-# Only regression (false-positive guard)
-pytest tests/test_regression_false_positives.py -v
+5. Deployment and packaging smoke checks
+- Project metadata, service file structure, and installer script syntax.
 
-# With coverage
-pip install pytest-cov
-pytest --cov=cat_detector --cov-report=term-missing
-```
+6. Deterministic replay traces
+- Recorded edge-case event traces replayed through the engine for reproducible regressions.
 
-## Notes
+7. Property-based invariants
+- Score monotonicity and cooldown monotonicity verified over generated input ranges.
 
-* Tests run on **any platform** — evdev, pynput, and winotify are stubbed.
-* The `EngineHarness` drives `_detection_engine` in a daemon thread and
-  patches `notify()` to record detections without touching the desktop.
-* Integration tests use `h.flush(secs)` to give the engine time to process
-  queued events — keep this small but > 0 to avoid flakiness.
-* Regression tests (`test_regression_false_positives.py`) are marked as
-  **critical** — a single false positive here is a ship-blocker.
+## Test architecture
+
+- Platform imports are stubbed in conftest fixtures so tests run without hardware devices.
+- EngineHarness injects synthetic keyboard events and captures detector outputs.
+- Parser tests use the production parser builder to prevent drift between implementation and tests.
+- Replay fixtures are stored under tests/fixtures/traces and loaded via trace_loader.
+
+## Current expectations
+
+- Input grabbing/freeze logic is not part of runtime behavior.
+- Locking is opt-in.
+- Detection decisions remain deterministic and formula-based.
