@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "Detects when a cat or toddler walks on your keyboard and responds appropriately"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "kevin" }]
 keywords = ["cat", "keyboard", "evdev", "linux", "windows", "wayland", "kde", "toddler"]
 classifiers = [
@@ -29,3 +29,6 @@ dev     = ["pytest", "ruff", "hypothesis>=6.0", "build>=1.2"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.setuptools]
+py-modules = ["cat_detector"]
