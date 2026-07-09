@@ -45,6 +45,7 @@ class TestImportSmoke:
         assert hasattr(cd, "read_runtime_status_snapshot")
         assert hasattr(cd, "write_runtime_status_page")
         assert hasattr(cd, "open_status_page")
+        assert hasattr(cd, "open_raw_heartbeat")
 
     def test_cooldown_is_positive(self, cd):
         assert cd.COOLDOWN_SECS > 0
@@ -90,6 +91,7 @@ class TestPyprojectToml:
     def test_status_entry_points_defined(self, toml_data):
         scripts = toml_data["project"]["scripts"]
         assert "cat-detector-open-status" in scripts
+        assert "cat-detector-open-heartbeat" in scripts
         assert "cat-detector-status-tray" in scripts
 
     def test_version_present(self, toml_data):
@@ -178,6 +180,10 @@ class TestInstallScript:
         text = (ROOT / "install.sh").read_text()
         assert "cat-detector-status.desktop" in text
 
+    def test_install_sh_installs_desktop_icon(self):
+        text = (ROOT / "install.sh").read_text()
+        assert "cat-detector-status.svg" in text
+
 
 class TestWindowsInstallerAssets:
     def test_inno_setup_uses_per_user_programs_dir(self):
@@ -204,6 +210,10 @@ class TestWindowsInstallerAssets:
     def test_inno_setup_registers_tray_startup(self):
         text = (ROOT / "installer" / "cat-detector.iss").read_text()
         assert 'ValueName: "{#MyAppName} Status"' in text
+
+    def test_windows_tray_module_has_raw_heartbeat_menu(self):
+        text = (ROOT / "cat_status_tray.py").read_text()
+        assert "Open raw heartbeat JSON" in text
 
     def test_windows_build_is_windowless_for_background_use(self):
         text = (ROOT / "cat_detector.spec").read_text()
@@ -247,3 +257,21 @@ class TestLinuxStatusLauncher:
         text = (ROOT / "cat-detector-status.desktop").read_text()
         assert "cat-detector-open-status" in text
         assert "Type=Application" in text
+
+    def test_desktop_launcher_uses_custom_icon(self):
+        text = (ROOT / "cat-detector-status.desktop").read_text()
+        assert "Icon=cat-detector-status" in text
+
+    def test_desktop_icon_asset_exists(self):
+        assert (ROOT / "cat-detector-status.svg").exists()
+
+
+class TestWindowsInstallerSmokeWorkflow:
+    def test_workflow_exists(self):
+        assert (ROOT / ".github" / "workflows" / "windows-installer-smoke.yml").exists()
+
+    def test_workflow_validates_both_executables(self):
+        text = (ROOT / ".github" / "workflows" / "windows-installer-smoke.yml").read_text()
+        assert "cat-detector.exe" in text
+        assert "cat-detector-status-tray.exe" in text
+        assert "cat-detector-installer" in text
