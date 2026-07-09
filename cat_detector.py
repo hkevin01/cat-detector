@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -121,6 +122,7 @@ LOCK_HARD_DISABLE_ENV = "CAT_DETECTOR_DISABLE_LOCK"
 LOCK_CIRCUIT_MIN_INTERVAL_SECS = 180.0
 LOCK_CIRCUIT_MAX_PER_SESSION = 2
 HEARTBEAT_INTERVAL_SECS = 30.0
+HEARTBEAT_SCHEMA_VERSION = 1
 
 TODDLER_MESSAGES = [
     "👶 TODDLER ALERT: Tiny hands detected on keyboard!",
@@ -521,59 +523,114 @@ def _heartbeat_path() -> Path:
 
 
 def _status_page_path() -> Path:
-        return _state_dir() / "status.html"
+    return _state_dir() / "status.html"
 
 
 def read_runtime_status_snapshot(now_utc: datetime | None = None) -> dict:
-        """Read the latest heartbeat and derive freshness metadata for UI surfaces."""
-        if now_utc is None:
-                now_utc = datetime.now(timezone.utc)
-        path = _heartbeat_path()
-        if not path.exists():
-                return {
-                        "available": False,
-                        "freshness_seconds": None,
-                        "freshness_label": "unknown",
-                        "last_detection_reason": None,
-                }
-
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        ts = datetime.fromisoformat(payload["timestamp_utc"])
-        freshness_seconds = max(0.0, (now_utc - ts).total_seconds())
-        if freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 2:
-                freshness_label = "fresh"
-        elif freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 6:
-                freshness_label = "stale"
-        else:
-                freshness_label = "offline"
-
+    """Read the latest heartbeat and derive freshness metadata for UI surfaces."""
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    path = _heartbeat_path()
+    if not path.exists():
         return {
-                **payload,
-                "available": True,
-                "freshness_seconds": freshness_seconds,
-                "freshness_label": freshness_label,
+            "available": False,
+            "freshness_seconds": None,
+            "freshness_label": "unknown",
+            "input_freshness_seconds": None,
+            "input_freshness_label": "unknown",
+            "last_detection_reason": None,
+            "heartbeat_version": None,
+            "schema_current": False,
         }
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    ts = datetime.fromisoformat(payload["timestamp_utc"])
+    freshness_seconds = max(0.0, (now_utc - ts).total_seconds())
+    if freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 2:
+        freshness_label = "fresh"
+    elif freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 6:
+        freshness_label = "stale"
+    else:
+        freshness_label = "offline"
+
+    input_ts_text = payload.get("last_successful_input_event_utc")
+    if input_ts_text:
+        input_ts = datetime.fromisoformat(input_ts_text)
+        input_freshness_seconds = max(0.0, (now_utc - input_ts).total_seconds())
+        if input_freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 4:
+            input_freshness_label = "active"
+        elif input_freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 20:
+            input_freshness_label = "idle"
+        else:
+            input_freshness_label = "quiet"
+    else:
+        input_freshness_seconds = None
+        input_freshness_label = "unknown"
+
+    heartbeat_version = payload.get("heartbeat_version")
+    return {
+        **payload,
+        "available": True,
+        "freshness_seconds": freshness_seconds,
+        "freshness_label": freshness_label,
+        "input_freshness_seconds": input_freshness_seconds,
+        "input_freshness_label": input_freshness_label,
+        "heartbeat_version": heartbeat_version,
+        "schema_current": heartbeat_version == HEARTBEAT_SCHEMA_VERSION,
+    }
+
+
+def open_status_page() -> bool:
+    """Open the generated status page using the platform's default browser."""
+    write_runtime_status_page()
+    path = _status_page_path()
+    try:
+        if _PLATFORM == "Windows" and hasattr(os, "startfile"):
+            os.startfile(str(path))
+            return True
+        if _PLATFORM == "Linux" and shutil.which("xdg-open"):
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        return bool(webbrowser.open(path.as_uri()))
+    except Exception as exc:
+        log.warning("Failed to open status page: %s", exc)
+        return False
+
+
+def open_status_page_main() -> None:
+    open_status_page()
 
 
 def write_runtime_status_page() -> None:
-        """Write a tiny human-readable status page for background runtime monitoring."""
-        try:
-                status = read_runtime_status_snapshot()
-                if not status.get("available"):
-                        body = "<p>No heartbeat has been recorded yet.</p>"
-                else:
-                        reason = status.get("last_detection_reason") or "none"
-                        body = f"""
+    """Write a tiny human-readable status page for background runtime monitoring."""
+    try:
+        status = read_runtime_status_snapshot()
+        if not status.get("available"):
+            body = "<p>No heartbeat has been recorded yet.</p>"
+        else:
+            reason = status.get("last_detection_reason") or "none"
+            last_input = status.get("last_successful_input_event_utc") or "none"
+            input_age = status.get("input_freshness_seconds")
+            input_age_text = "unknown" if input_age is None else f"{int(input_age)} seconds"
+            schema_text = "current" if status.get("schema_current") else "stale"
+            body = f"""
 <p><strong>Heartbeat freshness:</strong> <span id=\"freshness-label\">{status['freshness_label']}</span></p>
 <p><strong>Last heartbeat:</strong> <span id=\"heartbeat-ts\">{status['timestamp_utc']}</span></p>
 <p><strong>Last detection reason:</strong> {reason}</p>
+<p><strong>Heartbeat schema version:</strong> {status.get('heartbeat_version')} ({schema_text})</p>
+<p><strong>Last successful input event:</strong> {last_input}</p>
+<p><strong>Input stream health:</strong> {status.get('input_freshness_label')} ({input_age_text})</p>
 <p><strong>Mode:</strong> sensitivity={status.get('sensitivity')} toddler={status.get('toddler_mode')}</p>
 <p><strong>Lock policy:</strong> profile={status.get('lock_profile')} enabled={status.get('lock_enabled')}</p>
 <p><strong>PID:</strong> {status.get('pid')}</p>
 <p><strong>Freshness age:</strong> <span id=\"freshness-age\">{int(status['freshness_seconds'])}</span> seconds</p>
 """
 
-                html = f"""<!doctype html>
+        html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
     <meta charset=\"utf-8\">
@@ -621,11 +678,11 @@ def write_runtime_status_page() -> None:
 </body>
 </html>
 """
-                path = _status_page_path()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(html, encoding="utf-8")
-        except Exception as exc:
-                log.warning("Failed to write runtime status page: %s", exc)
+    path = _status_page_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html, encoding="utf-8")
+    except Exception as exc:
+    log.warning("Failed to write runtime status page: %s", exc)
 
 
 def record_detection_event(record: DetectionRecord) -> None:
@@ -646,6 +703,7 @@ def write_runtime_heartbeat(
     *,
     force: bool = False,
     last_detection_reason: str | None = None,
+    last_successful_input_event_utc: str | None = None,
     now_monotonic: float | None = None,
 ) -> None:
     """Persist a lightweight runtime heartbeat for background health monitoring."""
@@ -660,6 +718,7 @@ def write_runtime_heartbeat(
     try:
         payload = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "heartbeat_version": HEARTBEAT_SCHEMA_VERSION,
             "pid": os.getpid(),
             "platform": _PLATFORM,
             "sensitivity": getattr(args, "sensitivity", "medium"),
@@ -667,6 +726,7 @@ def write_runtime_heartbeat(
             "lock_profile": lock_profile(args),
             "lock_enabled": bool(getattr(args, "lock", False)),
             "last_detection_reason": last_detection_reason,
+            "last_successful_input_event_utc": last_successful_input_event_utc,
         }
         path = _heartbeat_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1099,6 +1159,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     zone_event_times:    deque            = deque(maxlen=120)
     keys_currently_held: set[int]         = set()
     last_detection = 0.0
+    last_input_event_utc: str | None = None
 
     def _fire(reason: str, walk_score: float | None = None, walk_threshold: float | None = None, **log_kw):
         nonlocal last_detection
@@ -1139,6 +1200,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
             args,
             force=True,
             last_detection_reason=reason,
+            last_successful_input_event_utc=last_input_event_utc,
             now_monotonic=now_mono,
         )
 
@@ -1159,17 +1221,22 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         thresh["min_paw"], HOLD_MIN_REPEATS,
         "enabled" if args.lock else "disabled",
     )
-    write_runtime_heartbeat(args, force=True)
+    write_runtime_heartbeat(args, force=True, last_successful_input_event_utc=last_input_event_utc)
 
     while True:
         try:
             kind, code = event_queue.get(timeout=1.0)
         except queue.Empty:
-            write_runtime_heartbeat(args)
+            write_runtime_heartbeat(args, last_successful_input_event_utc=last_input_event_utc)
             continue
 
         now = time.monotonic()
-        write_runtime_heartbeat(args, now_monotonic=now)
+        last_input_event_utc = datetime.now(timezone.utc).isoformat()
+        write_runtime_heartbeat(
+            args,
+            now_monotonic=now,
+            last_successful_input_event_utc=last_input_event_utc,
+        )
 
         # ── Key up ──────────────────────────────────────────────────────────
         if kind == "up":

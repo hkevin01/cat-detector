@@ -60,21 +60,30 @@ def test_record_detection_event_writes_jsonl(cd, tmp_path):
 
 def test_write_runtime_heartbeat_writes_json(cd, tmp_path):
     out_file = tmp_path / "heartbeat.json"
+    status_file = tmp_path / "status.html"
 
     def _path_override():
         return out_file
 
+    def _status_override():
+        return status_file
+
     old = cd._heartbeat_path
+    old_status = cd._status_page_path
     cd._heartbeat_path = _path_override
+    cd._status_page_path = _status_override
     cd._heartbeat_state["last"] = 0.0
     try:
         args = SimpleNamespace(sensitivity="medium", toddler=False, lock=True, lock_profile="adaptive")
         cd.write_runtime_heartbeat(args, force=True, last_detection_reason="walking", now_monotonic=1000.0)
     finally:
         cd._heartbeat_path = old
+        cd._status_page_path = old_status
 
     payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert payload["heartbeat_version"] == cd.HEARTBEAT_SCHEMA_VERSION
     assert payload["last_detection_reason"] == "walking"
+    assert payload["last_successful_input_event_utc"] is None
     assert payload["lock_profile"] == "adaptive"
     assert payload["lock_enabled"] is True
 
@@ -85,6 +94,7 @@ def test_read_runtime_status_snapshot_derives_freshness(cd, tmp_path):
         json.dumps(
             {
                 "timestamp_utc": "2026-07-09T12:00:00+00:00",
+                "heartbeat_version": cd.HEARTBEAT_SCHEMA_VERSION,
                 "pid": 1234,
                 "platform": "Linux",
                 "sensitivity": "medium",
@@ -92,6 +102,7 @@ def test_read_runtime_status_snapshot_derives_freshness(cd, tmp_path):
                 "lock_profile": "adaptive",
                 "lock_enabled": True,
                 "last_detection_reason": "walking",
+                "last_successful_input_event_utc": "2026-07-09T12:00:05+00:00",
             }
         ),
         encoding="utf-8",
@@ -111,6 +122,8 @@ def test_read_runtime_status_snapshot_derives_freshness(cd, tmp_path):
 
     assert status["available"] is True
     assert status["freshness_label"] == "fresh"
+    assert status["input_freshness_label"] == "active"
+    assert status["schema_current"] is True
     assert status["last_detection_reason"] == "walking"
 
 
@@ -121,6 +134,7 @@ def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
         json.dumps(
             {
                 "timestamp_utc": "2026-07-09T12:00:00+00:00",
+                "heartbeat_version": cd.HEARTBEAT_SCHEMA_VERSION,
                 "pid": 1234,
                 "platform": "Linux",
                 "sensitivity": "medium",
@@ -128,6 +142,7 @@ def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
                 "lock_profile": "high-risk",
                 "lock_enabled": True,
                 "last_detection_reason": "zone hopping",
+                "last_successful_input_event_utc": "2026-07-09T12:00:03+00:00",
             }
         ),
         encoding="utf-8",
@@ -153,6 +168,8 @@ def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
     assert "cat-detector status" in html
     assert "zone hopping" in html
     assert "Heartbeat freshness" in html
+    assert "Heartbeat schema version" in html
+    assert "Last successful input event" in html
 
 
 def test_compute_walk_metrics_returns_consistent_shape(cd):

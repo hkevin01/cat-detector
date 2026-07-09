@@ -44,6 +44,7 @@ class TestImportSmoke:
         assert hasattr(cd, "_status_page_path")
         assert hasattr(cd, "read_runtime_status_snapshot")
         assert hasattr(cd, "write_runtime_status_page")
+        assert hasattr(cd, "open_status_page")
 
     def test_cooldown_is_positive(self, cd):
         assert cd.COOLDOWN_SECS > 0
@@ -78,9 +79,18 @@ class TestPyprojectToml:
         win_deps = toml_data["project"]["optional-dependencies"]["windows"]
         assert any("pynput" in d for d in win_deps)
 
+    def test_windows_optional_dep_includes_pystray(self, toml_data):
+        win_deps = toml_data["project"]["optional-dependencies"]["windows"]
+        assert any("pystray" in d for d in win_deps)
+
     def test_entry_point_defined(self, toml_data):
         scripts = toml_data["project"]["scripts"]
         assert "cat-detector" in scripts
+
+    def test_status_entry_points_defined(self, toml_data):
+        scripts = toml_data["project"]["scripts"]
+        assert "cat-detector-open-status" in scripts
+        assert "cat-detector-status-tray" in scripts
 
     def test_version_present(self, toml_data):
         assert "version" in toml_data["project"]
@@ -164,6 +174,10 @@ class TestInstallScript:
         assert ".local/share/cat-detector" in text
         assert "python3 -m venv" in text
 
+    def test_install_sh_installs_desktop_launcher(self):
+        text = (ROOT / "install.sh").read_text()
+        assert "cat-detector-status.desktop" in text
+
 
 class TestWindowsInstallerAssets:
     def test_inno_setup_uses_per_user_programs_dir(self):
@@ -183,9 +197,28 @@ class TestWindowsInstallerAssets:
         text = (ROOT / "installer" / "cat-detector.iss").read_text()
         assert "runs in the background" in text
 
+    def test_inno_setup_includes_tray_executable(self):
+        text = (ROOT / "installer" / "cat-detector.iss").read_text()
+        assert "cat-detector-status-tray.exe" in text
+
+    def test_inno_setup_registers_tray_startup(self):
+        text = (ROOT / "installer" / "cat-detector.iss").read_text()
+        assert 'ValueName: "{#MyAppName} Status"' in text
+
     def test_windows_build_is_windowless_for_background_use(self):
         text = (ROOT / "cat_detector.spec").read_text()
         assert "console=False" in text
+
+    def test_windows_tray_spec_exists(self):
+        assert (ROOT / "cat_status_tray.spec").exists()
+
+    def test_windows_build_script_builds_tray(self):
+        text = (ROOT / "scripts" / "build_windows.ps1").read_text()
+        assert "cat_status_tray.spec" in text
+        assert "cat-detector-status-tray.exe" in text
+
+    def test_windows_tray_module_exists(self):
+        assert (ROOT / "cat_status_tray.py").exists()
 
 
 class TestLinuxServiceOverrideTemplate:
@@ -204,3 +237,13 @@ class TestLinuxServiceOverrideTemplate:
     def test_install_sh_mentions_status_runtime_home(self):
         text = (ROOT / "install.sh").read_text()
         assert "Runtime home" in text
+
+
+class TestLinuxStatusLauncher:
+    def test_desktop_launcher_exists(self):
+        assert (ROOT / "cat-detector-status.desktop").exists()
+
+    def test_desktop_launcher_opens_status_helper(self):
+        text = (ROOT / "cat-detector-status.desktop").read_text()
+        assert "cat-detector-open-status" in text
+        assert "Type=Application" in text

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Cat Detector Status
+Comment=Open the cat-detector runtime status page
+Exec=/bin/sh -lc "$HOME/.local/share/cat-detector/venv/bin/cat-detector-open-status"
+Terminal=false
+Categories=Utility;System;

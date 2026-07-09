@@ -21,14 +21,16 @@ dependencies = []
 
 [project.scripts]
 cat-detector = "cat_detector:main"
+cat-detector-open-status = "cat_detector:open_status_page_main"
+cat-detector-status-tray = "cat_status_tray:main"
 
 [project.optional-dependencies]
 linux   = ["evdev>=1.6"]
-windows = ["pynput>=1.7", "winotify>=1.1"]
+windows = ["pynput>=1.7", "winotify>=1.1", "pystray>=0.19", "Pillow>=10.0"]
 dev     = ["pytest", "ruff", "hypothesis>=6.0", "build>=1.2"]
 
 [tool.ruff]
 line-length = 100
 
 [tool.setuptools]
-py-modules = ["cat_detector"]
+py-modules = ["cat_detector", "cat_status_tray"]

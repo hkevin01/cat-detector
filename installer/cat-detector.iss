@@ -12,6 +12,7 @@
 #define MyAppPublisher "hkevin01"
 #define MyAppURL       "https://github.com/hkevin01/cat-detector"
 #define MyAppExeName   "cat-detector.exe"
+#define MyTrayExeName  "cat-detector-status-tray.exe"
 
 [Setup]
 ; NOTE: Double-brace {{ }} is Inno Setup's escape for a literal {
@@ -51,12 +52,14 @@ Name: "startup"; \
 [Files]
 ; Main executable — built by PyInstaller before running this script
 Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\{#MyTrayExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; README for in-installer reading (shown on the InfoAfter page)
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 
 [Icons]
 ; Start Menu shortcuts
 Name: "{group}\{#MyAppName}";              Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName} Status";       Filename: "{app}\{#MyTrayExeName}"
 Name: "{group}\{#MyAppName} (high sensitivity)"; \
   Filename: "{app}\{#MyAppExeName}";       Parameters: "--sensitivity high"
 Name: "{group}\{#MyAppName} (toddler mode)"; \
@@ -72,6 +75,13 @@ Root: HKCU; \
   ValueData: """{app}\{#MyAppExeName}"""; \
   Flags: uninsdeletevalue; \
   Tasks: startup
+Root: HKCU; \
+  Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
+  ValueType: string; \
+  ValueName: "{#MyAppName} Status"; \
+  ValueData: """{app}\{#MyTrayExeName}"""; \
+  Flags: uninsdeletevalue; \
+  Tasks: startup
 
 [Run]
 ; Optional post-install launch (checkbox shown to user, unchecked by default)
@@ -79,3 +89,6 @@ Filename: "{app}\{#MyAppExeName}"; \
   Description: "Launch {#MyAppName} now (runs in the background)"; \
   Flags: nowait postinstall skipifsilent; \
   Parameters: "--sensitivity medium"
+Filename: "{app}\{#MyTrayExeName}"; \
+  Description: "Launch {#MyAppName} status tray now"; \
+  Flags: nowait postinstall skipifsilent unchecked

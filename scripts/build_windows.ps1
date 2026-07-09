@@ -1,11 +1,12 @@
 # =============================================================================
 # ID:       CAT-DETECTOR-BUILD-WIN-001
 # Purpose:  Local Windows build script — installs dependencies, builds the
-#           standalone cat-detector.exe with PyInstaller, and (if Inno Setup 6
+#           standalone cat-detector.exe and cat-detector-status-tray.exe with PyInstaller, and (if Inno Setup 6
 #           is present) packages it into a GUI installer .exe.
 # Platform: Windows 10/11, PowerShell 5.1+
 # Usage:    From the project root:  .\scripts\build_windows.ps1
 # Output:   dist\cat-detector.exe
+#           dist\cat-detector-status-tray.exe
 #           dist\cat-detector-installer-2.0.0-windows-x64.exe  (if ISCC found)
 # =============================================================================
 
@@ -31,27 +32,34 @@ try {
 # 2. Install / upgrade pip build dependencies
 # ---------------------------------------------------------------------------
 Write-Host "`n[1/3] Installing build dependencies..." -ForegroundColor Yellow
-pip install --upgrade pyinstaller pynput winotify
+pip install --upgrade pyinstaller pynput winotify pystray pillow
 
 # ---------------------------------------------------------------------------
-# 3. Build the standalone exe with PyInstaller
+# 3. Build the standalone exes with PyInstaller
 # ---------------------------------------------------------------------------
-Write-Host "`n[2/3] Building cat-detector.exe with PyInstaller..." -ForegroundColor Yellow
+Write-Host "`n[2/3] Building Windows executables with PyInstaller..." -ForegroundColor Yellow
 
-if (-not (Test-Path "cat_detector.spec")) {
-    Write-Error "cat_detector.spec not found. Run this script from the project root."
+if ((-not (Test-Path "cat_detector.spec")) -or (-not (Test-Path "cat_status_tray.spec"))) {
+    Write-Error "Required PyInstaller spec files not found. Run this script from the project root."
     exit 1
 }
 
 pyinstaller --noconfirm --clean cat_detector.spec
+pyinstaller --noconfirm --clean cat_status_tray.spec
 
 if (-not (Test-Path "dist\cat-detector.exe")) {
     Write-Error "PyInstaller build failed — dist\cat-detector.exe not produced."
     exit 1
 }
+if (-not (Test-Path "dist\cat-detector-status-tray.exe")) {
+    Write-Error "PyInstaller build failed — dist\cat-detector-status-tray.exe not produced."
+    exit 1
+}
 
 $exeSize = (Get-Item "dist\cat-detector.exe").Length / 1MB
 Write-Host "  Built: dist\cat-detector.exe  ($([math]::Round($exeSize, 1)) MB)" -ForegroundColor Green
+$traySize = (Get-Item "dist\cat-detector-status-tray.exe").Length / 1MB
+Write-Host "  Built: dist\cat-detector-status-tray.exe  ($([math]::Round($traySize, 1)) MB)" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # 4. Build the installer with Inno Setup (optional)
@@ -75,7 +83,7 @@ if (Test-Path $iscc) {
 } else {
     Write-Host "  Inno Setup 6 not found at: $iscc" -ForegroundColor DarkYellow
     Write-Host "  Download from https://www.innosetup.com/ to build the installer." -ForegroundColor DarkYellow
-    Write-Host "  Standalone exe is still available at dist\cat-detector.exe" -ForegroundColor Yellow
+    Write-Host "  Standalone exes are still available at dist\cat-detector.exe and dist\cat-detector-status-tray.exe" -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
@@ -95,4 +103,5 @@ Write-Host "  dist\cat-detector.exe                         # default (lock OFF,
 Write-Host "  dist\cat-detector.exe --sensitivity high      # dainty steppers"
 Write-Host "  dist\cat-detector.exe --toddler               # toddler mode"
 Write-Host "  dist\cat-detector.exe --lock --sound          # lock + notification + meow"
+Write-Host "  dist\cat-detector-status-tray.exe             # tray status monitor"
 Write-Host ""
