@@ -25,7 +25,7 @@ cat-detector = "cat_detector:main"
 [project.optional-dependencies]
 linux   = ["evdev>=1.6"]
 windows = ["pynput>=1.7", "winotify>=1.1"]
-dev     = ["pytest", "ruff", "hypothesis>=6.0"]
+dev     = ["pytest", "ruff", "hypothesis>=6.0", "build>=1.2"]
 
 [tool.ruff]
 line-length = 100

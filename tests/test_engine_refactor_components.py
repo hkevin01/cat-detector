@@ -3,8 +3,11 @@ Tests for pure scoring components and structured event records.
 """
 
 import json
+import os
 from types import SimpleNamespace
 from datetime import datetime, timezone
+
+import pytest
 
 
 def test_adaptive_baseline_never_drops_below_static(cd):
@@ -100,6 +103,7 @@ def test_dispatch_detection_actions_runs_soft_mitigation(cd):
 def test_dispatch_detection_actions_still_honors_lock_flag(cd):
     args = SimpleNamespace(sound=False, lock=True)
     called = {"lock": 0}
+    cd.reset_lock_circuit_state()
 
     old_notify = cd.notify
     old_neutralize = cd.neutralize_active_input
@@ -124,6 +128,7 @@ def test_dispatch_detection_actions_still_honors_lock_flag(cd):
 def test_high_risk_lock_profile_locks_only_for_high_risk_reason(cd):
     args = SimpleNamespace(sound=False, lock=True, lock_profile="high-risk")
     called = {"lock": 0}
+    cd.reset_lock_circuit_state()
 
     old_notify = cd.notify
     old_neutralize = cd.neutralize_active_input
@@ -149,6 +154,7 @@ def test_high_risk_lock_profile_locks_only_for_high_risk_reason(cd):
 def test_high_risk_lock_profile_catches_enter_simultaneous(cd):
     args = SimpleNamespace(sound=False, lock=True, lock_profile="high-risk")
     called = {"lock": 0}
+    cd.reset_lock_circuit_state()
 
     old_notify = cd.notify
     old_neutralize = cd.neutralize_active_input
@@ -168,3 +174,54 @@ def test_high_risk_lock_profile_catches_enter_simultaneous(cd):
         cd.lock_screen = old_lock
 
     assert called["lock"] == 1
+
+
+@pytest.mark.parametrize(
+    ("profile", "reason", "expected"),
+    [
+        ("all", "walking", True),
+        ("all", "zone hopping", True),
+        ("all", "paw press", True),
+        ("all", "key streak", True),
+        ("all", "sitting/standing", True),
+        ("all", "enter+simultaneous", True),
+        ("high-risk", "walking", False),
+        ("high-risk", "zone hopping", False),
+        ("high-risk", "paw press", False),
+        ("high-risk", "key streak", False),
+        ("high-risk", "sitting/standing", True),
+        ("high-risk", "enter+simultaneous", True),
+    ],
+)
+def test_reason_profile_lock_decision_matrix(cd, profile, reason, expected):
+    args = SimpleNamespace(sound=False, lock=True, lock_profile=profile)
+    assert cd.should_lock_for_reason(args, reason) is expected
+
+
+def test_lock_disable_env_overrides_policy(cd):
+    args = SimpleNamespace(sound=False, lock=True, lock_profile="all")
+    old = os.environ.get(cd.LOCK_HARD_DISABLE_ENV)
+    os.environ[cd.LOCK_HARD_DISABLE_ENV] = "1"
+    try:
+        assert cd.should_lock_for_reason(args, "sitting/standing") is False
+        assert cd.should_lock_for_reason(args, "walking") is False
+    finally:
+        if old is None:
+            os.environ.pop(cd.LOCK_HARD_DISABLE_ENV, None)
+        else:
+            os.environ[cd.LOCK_HARD_DISABLE_ENV] = old
+
+
+def test_lock_circuit_blocks_repeated_locks(cd):
+    cd.reset_lock_circuit_state()
+    t0 = 1000.0
+    assert cd.lock_circuit_allows(now=t0) is True
+    assert cd.lock_circuit_allows(now=t0 + 1.0) is False
+
+
+def test_lock_circuit_enforces_session_cap(cd):
+    cd.reset_lock_circuit_state()
+    t0 = 1000.0
+    assert cd.lock_circuit_allows(now=t0) is True
+    assert cd.lock_circuit_allows(now=t0 + cd.LOCK_CIRCUIT_MIN_INTERVAL_SECS + 1.0) is True
+    assert cd.lock_circuit_allows(now=t0 + 2 * cd.LOCK_CIRCUIT_MIN_INTERVAL_SECS + 2.0) is False

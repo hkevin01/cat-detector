@@ -116,6 +116,9 @@ LOCK_PROFILE_ALL = "all"
 LOCK_PROFILE_HIGH_RISK = "high-risk"
 LOCK_PROFILE_ENV = "CAT_DETECTOR_LOCK_PROFILE"
 HIGH_RISK_REASONS = {"sitting/standing", "enter+simultaneous"}
+LOCK_HARD_DISABLE_ENV = "CAT_DETECTOR_DISABLE_LOCK"
+LOCK_CIRCUIT_MIN_INTERVAL_SECS = 180.0
+LOCK_CIRCUIT_MAX_PER_SESSION = 2
 
 TODDLER_MESSAGES = [
     "👶 TODDLER ALERT: Tiny hands detected on keyboard!",
@@ -244,6 +247,12 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("cat-detector")
+
+_lock_circuit_state = {
+    "count": 0,
+    "last": 0.0,
+}
+_lock_circuit_guard = threading.Lock()
 
 
 def find_keyboards():
@@ -485,10 +494,35 @@ def should_lock_for_reason(args, reason: str) -> bool:
     """Return True when current policy requires screen lock for this reason."""
     if not getattr(args, "lock", False):
         return False
+    if os.environ.get(LOCK_HARD_DISABLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
     profile = lock_profile(args)
     if profile == LOCK_PROFILE_ALL:
         return True
     return reason in HIGH_RISK_REASONS
+
+
+def reset_lock_circuit_state() -> None:
+    """Reset lock circuit counters; useful for tests and controlled restarts."""
+    with _lock_circuit_guard:
+        _lock_circuit_state["count"] = 0
+        _lock_circuit_state["last"] = 0.0
+
+
+def lock_circuit_allows(now: float | None = None) -> bool:
+    """Safety gate to avoid repeated lock loops during persistent event storms."""
+    if now is None:
+        now = time.monotonic()
+    with _lock_circuit_guard:
+        count = _lock_circuit_state["count"]
+        last = _lock_circuit_state["last"]
+        if count >= LOCK_CIRCUIT_MAX_PER_SESSION:
+            return False
+        if last and (now - last) < LOCK_CIRCUIT_MIN_INTERVAL_SECS:
+            return False
+        _lock_circuit_state["count"] = count + 1
+        _lock_circuit_state["last"] = now
+    return True
 
 
 def dispatch_detection_actions(args, message: str, reason: str) -> None:
@@ -497,7 +531,7 @@ def dispatch_detection_actions(args, message: str, reason: str) -> None:
     neutralize_active_input()
     if args.sound:
         play_meow()
-    if should_lock_for_reason(args, reason):
+    if should_lock_for_reason(args, reason) and lock_circuit_allows():
         lock_screen()
 
 
