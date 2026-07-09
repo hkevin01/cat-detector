@@ -102,7 +102,7 @@ class TestServiceFile:
         assert "Restart=on-failure" in service_text
 
     def test_exec_start_references_cat_detector(self, service_text):
-        assert "cat_detector" in service_text
+        assert "cat_detector" in service_text or "cat-detector" in service_text
 
     def test_exec_start_has_lock_flag(self, service_text):
         # Lock is default OFF; service may include optional flags as needed.
@@ -111,6 +111,12 @@ class TestServiceFile:
             (line for line in service_text.splitlines() if line.startswith("ExecStart=")), ""
         )
         assert "cat_detector.py" in exec_line or "cat-detector" in exec_line
+
+    def test_service_uses_managed_runtime_location(self, service_text):
+        assert ".local/share/cat-detector/venv/bin/cat-detector" in service_text
+
+    def test_service_sets_working_directory(self, service_text):
+        assert "WorkingDirectory=%h/.local/share/cat-detector" in service_text
 
 
 # ── install.sh syntax ────────────────────────────────────────────────────
@@ -145,3 +151,22 @@ class TestInstallScript:
     def test_install_sh_mentions_pacman(self):
         text = (ROOT / "install.sh").read_text()
         assert "pacman" in text
+
+    def test_install_sh_creates_managed_venv(self):
+        text = (ROOT / "install.sh").read_text()
+        assert ".local/share/cat-detector" in text
+        assert "python3 -m venv" in text
+
+
+class TestWindowsInstallerAssets:
+    def test_inno_setup_uses_per_user_programs_dir(self):
+        text = (ROOT / "installer" / "cat-detector.iss").read_text()
+        assert "DefaultDirName={localappdata}\\Programs\\{#MyAppName}" in text
+
+    def test_inno_setup_startup_is_sign_in_scoped(self):
+        text = (ROOT / "installer" / "cat-detector.iss").read_text()
+        assert "automatically when you sign in" in text
+
+    def test_windows_build_is_windowless_for_background_use(self):
+        text = (ROOT / "cat_detector.spec").read_text()
+        assert "console=False" in text

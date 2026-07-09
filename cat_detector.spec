@@ -50,8 +50,8 @@ _version_file = os.path.join('installer', 'version_info.txt')
 _version_file = _version_file if os.path.isfile(_version_file) else None
 
 # ---------------------------------------------------------------------------
-# EXE — onefile executable; console=True so detection log is visible
-#        when launched from Command Prompt / PowerShell.
+# EXE — onefile executable; console=False so Windows startup/background use
+# does not create a persistent console window during normal desktop sessions.
 # ---------------------------------------------------------------------------
 exe = EXE(
     pyz,
@@ -66,7 +66,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,          # keep console — users see live detection output
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

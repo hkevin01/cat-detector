@@ -25,7 +25,7 @@ AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
 ; Install per-user by default (no UAC prompt); dialog lets user elevate for
 ; an all-users install if preferred.
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 ; Output location and filename (relative to this .iss file)
@@ -44,7 +44,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 ; Optional: add cat-detector to the Windows startup registry key
 Name: "startup"; \
-  Description: "Start {#MyAppName} automatically when Windows starts"; \
+  Description: "Start {#MyAppName} automatically when you sign in"; \
   GroupDescription: "Startup options:"; \
   Flags: unchecked
 

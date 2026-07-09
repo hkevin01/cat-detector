@@ -6,7 +6,9 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/sg input -c "/usr/bin/python3 %h/Projects/cat-detector/cat_detector.py"
+WorkingDirectory=%h/.local/share/cat-detector
+Environment=PATH=%h/.local/share/cat-detector/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/cat-detector/venv/bin/cat-detector
 Restart=on-failure
 RestartSec=30
 RestartSteps=3
