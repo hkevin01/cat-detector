@@ -3,6 +3,7 @@ Tests for pure scoring components and structured event records.
 """
 
 import json
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 
@@ -60,3 +61,61 @@ def test_compute_walk_metrics_returns_consistent_shape(cd):
     assert isinstance(active, set)
     assert metrics.unique_keys >= 1
     assert 0.0 <= metrics.spread <= 1.0
+
+
+def test_dispatch_detection_actions_runs_soft_mitigation(cd):
+    args = SimpleNamespace(sound=False, lock=False)
+    called = {
+        "notify": 0,
+        "neutralize": 0,
+        "sound": 0,
+        "lock": 0,
+    }
+
+    old_notify = cd.notify
+    old_neutralize = cd.neutralize_active_input
+    old_sound = cd.play_meow
+    old_lock = cd.lock_screen
+    try:
+        cd.notify = lambda *_a, **_kw: called.__setitem__("notify", called["notify"] + 1)
+        cd.neutralize_active_input = (
+            lambda *_a, **_kw: called.__setitem__("neutralize", called["neutralize"] + 1)
+        )
+        cd.play_meow = lambda *_a, **_kw: called.__setitem__("sound", called["sound"] + 1)
+        cd.lock_screen = lambda *_a, **_kw: called.__setitem__("lock", called["lock"] + 1)
+
+        cd.dispatch_detection_actions(args, "cat detected")
+    finally:
+        cd.notify = old_notify
+        cd.neutralize_active_input = old_neutralize
+        cd.play_meow = old_sound
+        cd.lock_screen = old_lock
+
+    assert called["notify"] == 1
+    assert called["neutralize"] == 1
+    assert called["sound"] == 0
+    assert called["lock"] == 0
+
+
+def test_dispatch_detection_actions_still_honors_lock_flag(cd):
+    args = SimpleNamespace(sound=False, lock=True)
+    called = {"lock": 0}
+
+    old_notify = cd.notify
+    old_neutralize = cd.neutralize_active_input
+    old_sound = cd.play_meow
+    old_lock = cd.lock_screen
+    try:
+        cd.notify = lambda *_a, **_kw: None
+        cd.neutralize_active_input = lambda *_a, **_kw: None
+        cd.play_meow = lambda *_a, **_kw: None
+        cd.lock_screen = lambda *_a, **_kw: called.__setitem__("lock", called["lock"] + 1)
+
+        cd.dispatch_detection_actions(args, "cat detected")
+    finally:
+        cd.notify = old_notify
+        cd.neutralize_active_input = old_neutralize
+        cd.play_meow = old_sound
+        cd.lock_screen = old_lock
+
+    assert called["lock"] == 1

@@ -103,3 +103,13 @@ class TestHumanTypingNeverFires:
             h.key_down(32)
             h.flush()
         assert len(h.detections) == 0
+
+    def test_adjacent_zone_rollover_no_zone_hop_detection(self, cd):
+        """Fast adjacent-zone rollovers from human hands must not trigger."""
+        with EngineHarness(cd, sensitivity="medium") as h:
+            for code in (30, 31, 32, 33, 34, 35, 36, 37, 38, 39):
+                h.key_down(code)
+                h.key_up(code)
+                time.sleep(0.03)
+            h.flush(0.3)
+        assert len(h.detections) == 0

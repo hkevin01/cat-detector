@@ -143,6 +143,18 @@ HOLD_MIN_REPEATS = 15    # single key: ≥ this many repeats in window → cat p
 HOLD_MULTI_KEYS  = 2     # ≥ this many different keys simultaneously repeating…
 HOLD_MULTI_MIN   = 5     # …each with at least this many repeats → cat sitting
 
+# Rapid non-adjacent zone hopping strongly indicates paw movement across the
+# keyboard surface rather than normal finger travel.
+ZONE_HOP_WINDOW_SECS = 0.9
+ZONE_HOP_MIN_EVENTS = 7
+ZONE_HOP_MIN_TRANSITIONS = 4
+ZONE_HOP_MIN_FAR_HOPS = 3
+ZONE_HOP_MIN_UNIQUE_ZONES = 4
+TODDLER_ZONE_HOP_MIN_EVENTS = 5
+TODDLER_ZONE_HOP_MIN_TRANSITIONS = 3
+TODDLER_ZONE_HOP_MIN_FAR_HOPS = 2
+TODDLER_ZONE_HOP_MIN_UNIQUE_ZONES = 3
+
 # Keys humans legitimately hold — excluded from hold/sit and walk detection.
 # PawSense insight: "cats have a general disregard for the existence of the
 # Backspace key."  Backspace/delete/arrows in the event stream = human.
@@ -189,6 +201,23 @@ ZONE_KEYS = {
     "bottom-center":{47,48,49,57},    # includes space
     "bottom-right": {50,51,52,53,54,55,56},
 }
+
+ZONE_COORDS = {
+    "top-left": (0, 0),
+    "top-center": (0, 1),
+    "top-right": (0, 2),
+    "home-left": (1, 0),
+    "home-center": (1, 1),
+    "home-right": (1, 2),
+    "bottom-left": (2, 0),
+    "bottom-center": (2, 1),
+    "bottom-right": (2, 2),
+}
+
+KEY_PRIMARY_ZONE: dict[int, str] = {}
+for _zone_name, _keys in ZONE_KEYS.items():
+    for _code in _keys:
+        KEY_PRIMARY_ZONE.setdefault(_code, _zone_name)
 
 CAT_MESSAGES = [
     "🐱 CAT ALERT: A feline has claimed your keyboard as a bed.",
@@ -369,9 +398,76 @@ def record_detection_event(record: DetectionRecord) -> None:
         log.warning("Failed to write detection event record: %s", exc)
 
 
+def _linux_soft_neutralize_input() -> bool:
+    """Best-effort Linux mitigation: cancel active combos/menus via xdotool."""
+    if not shutil.which("xdotool"):
+        return False
+    try:
+        # Release common modifiers first, then send Escape twice to cancel
+        # app/window switchers without aggressive user disruption.
+        subprocess.run(
+            [
+                "xdotool",
+                "keyup", "Alt_L",
+                "keyup", "Alt_R",
+                "keyup", "Control_L",
+                "keyup", "Control_R",
+                "keyup", "Shift_L",
+                "keyup", "Shift_R",
+                "keyup", "Super_L",
+                "keyup", "Super_R",
+                "key", "Escape",
+                "key", "Escape",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _windows_soft_neutralize_input() -> bool:
+    """Best-effort Windows mitigation: release modifiers and send Escape."""
+    if not _user32:
+        return False
+    try:
+        keyeventf_keyup = 0x0002
+        vk_modifiers = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift/Ctrl/Alt/LWin/RWin
+        for vk in vk_modifiers:
+            _user32.keybd_event(vk, 0, keyeventf_keyup, 0)
+
+        vk_escape = 0x1B
+        _user32.keybd_event(vk_escape, 0, 0, 0)
+        _user32.keybd_event(vk_escape, 0, keyeventf_keyup, 0)
+        _user32.keybd_event(vk_escape, 0, 0, 0)
+        _user32.keybd_event(vk_escape, 0, keyeventf_keyup, 0)
+        return True
+    except Exception:
+        return False
+
+
+def neutralize_active_input() -> None:
+    """
+    Smooth mitigation step to reduce accidental typing/window switching.
+
+    This does not grab devices. It only performs best-effort cancellation
+    gestures (release modifiers + Escape taps) to reduce immediate damage.
+    """
+    ok = False
+    if _PLATFORM == "Linux":
+        ok = _linux_soft_neutralize_input()
+    elif _PLATFORM == "Windows":
+        ok = _windows_soft_neutralize_input()
+    if not ok:
+        log.debug("Soft mitigation unavailable on this platform/runtime")
+
+
 def dispatch_detection_actions(args, message: str) -> None:
     """Execute side effects for a detection event."""
     notify(message)
+    neutralize_active_input()
     if args.sound:
         play_meow()
     if args.lock:
@@ -442,6 +538,64 @@ def streak_detection_signal(
     recent = [t for t in key_times[code] if t >= now - streak_window]
     if len(recent) >= streak_min and cooldown_allows(now, last_detection):
         return {"key": code, "count": len(recent), "window": f"{streak_window:.1f}s"}
+    return None
+
+
+def zone_hop_detection_signal(
+    zone_event_times: deque,
+    now: float,
+    last_detection: float,
+    toddler_mode: bool,
+) -> dict | None:
+    """Pure detector for rapid non-adjacent zone-hopping movement."""
+    while zone_event_times and zone_event_times[0][0] < now - ZONE_HOP_WINDOW_SECS:
+        zone_event_times.popleft()
+
+    min_events = TODDLER_ZONE_HOP_MIN_EVENTS if toddler_mode else ZONE_HOP_MIN_EVENTS
+    min_transitions = (
+        TODDLER_ZONE_HOP_MIN_TRANSITIONS if toddler_mode else ZONE_HOP_MIN_TRANSITIONS
+    )
+    min_far_hops = TODDLER_ZONE_HOP_MIN_FAR_HOPS if toddler_mode else ZONE_HOP_MIN_FAR_HOPS
+    min_unique_zones = (
+        TODDLER_ZONE_HOP_MIN_UNIQUE_ZONES if toddler_mode else ZONE_HOP_MIN_UNIQUE_ZONES
+    )
+
+    if len(zone_event_times) < min_events or not cooldown_allows(now, last_detection):
+        return None
+
+    compressed: list[str] = []
+    for _, zone in zone_event_times:
+        if not compressed or compressed[-1] != zone:
+            compressed.append(zone)
+
+    transitions = 0
+    far_hops = 0
+    for i in range(1, len(compressed)):
+        prev = compressed[i - 1]
+        curr = compressed[i]
+        if curr == prev:
+            continue
+        transitions += 1
+        pr, pc = ZONE_COORDS[prev]
+        cr, cc = ZONE_COORDS[curr]
+        manhattan = abs(pr - cr) + abs(pc - cc)
+        if manhattan >= 2:
+            far_hops += 1
+
+    unique_zones = len(set(compressed))
+
+    if (
+        transitions >= min_transitions
+        and far_hops >= min_far_hops
+        and unique_zones >= min_unique_zones
+    ):
+        return {
+            "events": len(zone_event_times),
+            "transitions": transitions,
+            "far_hops": far_hops,
+            "unique_zones": unique_zones,
+            "window": f"{ZONE_HOP_WINDOW_SECS:.1f}s",
+        }
     return None
 
 
@@ -544,6 +698,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
     key_times:           dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
+    zone_event_times:    deque            = deque(maxlen=120)
     keys_currently_held: set[int]         = set()
     last_detection = 0.0
 
@@ -570,6 +725,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
         key_times.clear()
         key_hold_times.clear()
+        zone_event_times.clear()
         keys_currently_held.clear()
 
     log.info(
@@ -607,6 +763,15 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
         # key_down from here ──────────────────────────────────────────────────
         keys_currently_held.add(code)
+        if code not in HUMAN_HOLD_KEYS and code not in MODIFIER_KEYS:
+            zone = KEY_PRIMARY_ZONE.get(code)
+            if zone is not None:
+                zone_event_times.append((now, zone))
+
+        hop_metrics = zone_hop_detection_signal(zone_event_times, now, last_detection, args.toddler)
+        if hop_metrics is not None:
+            _fire("zone hopping", **hop_metrics)
+            continue
 
         # ── Paw-press / toddler-slam detection ───────────────────────────────
         paw_signal = paw_detection_signal(keys_currently_held, thresh, now, last_detection)

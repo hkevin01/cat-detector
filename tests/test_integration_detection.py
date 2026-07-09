@@ -149,6 +149,40 @@ class TestWalkDetection:
         assert len(h.detections) == 0
 
 
+class TestZoneHopDetection:
+    def test_zone_hopping_fires_for_cat_like_pattern(self, cd):
+        """Rapid non-adjacent zone hops should trigger zone-hopping detection."""
+        # Alternate between distant zones to emulate paw movement.
+        pattern = [
+            2,   # top-left
+            10,  # top-right
+            44,  # bottom-left
+            51,  # home-right / bottom-right overlap
+            16,  # top-left
+            38,  # top-right
+            46,  # bottom-left
+            53,  # bottom-right
+        ]
+        with EngineHarness(cd, sensitivity="medium") as h:
+            for code in pattern:
+                h.key_down(code)
+                time.sleep(0.02)
+            h.flush(0.3)
+        assert len(h.detections) >= 1
+
+    def test_adjacent_zone_alternation_does_not_trigger(self, cd):
+        """Near-home human movement should stay below zone-hopping thresholds."""
+        # Home-left to home-center alternation only.
+        pattern = [30, 31, 33, 34, 30, 33, 31, 34, 30, 33]
+        with EngineHarness(cd, sensitivity="medium") as h:
+            for code in pattern:
+                h.key_down(code)
+                h.key_up(code)
+                time.sleep(0.04)
+            h.flush(0.3)
+        assert len(h.detections) == 0
+
+
 class TestHoldSitDetection:
     def test_single_key_flood_fires(self, cd):
         """15+ hold events for one key within 2 s → sit detection."""
