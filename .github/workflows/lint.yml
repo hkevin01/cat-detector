@@ -13,6 +13,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: pip install ruff
+        run: pip install -c constraints/dev-linux.txt ruff
       - name: Lint
         run: ruff check .

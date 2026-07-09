@@ -1,0 +1,64 @@
+"""
+Schema validation tests for structured detection JSONL payloads.
+"""
+
+import pytest
+
+
+def _valid_payload(cd):
+    return {
+        "timestamp_utc": "2026-07-09T12:34:56.123456+00:00",
+        "entity": "cat",
+        "reason": "walking",
+        "sensitivity": "medium",
+        "toddler_mode": False,
+        "metrics": {"keys": 24, "rate": "12.0/s", "spread": "66%"},
+        "walk_score": 1.08,
+        "walk_threshold": 1.03,
+    }
+
+
+def test_detection_record_payload_validates(cd):
+    payload = _valid_payload(cd)
+    cd.validate_detection_record_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "timestamp_utc",
+        "entity",
+        "reason",
+        "sensitivity",
+        "toddler_mode",
+        "metrics",
+        "walk_score",
+        "walk_threshold",
+    ],
+)
+def test_detection_record_missing_field_rejected(cd, field):
+    payload = _valid_payload(cd)
+    payload.pop(field)
+    with pytest.raises(ValueError):
+        cd.validate_detection_record_payload(payload)
+
+
+def test_detection_record_invalid_timestamp_rejected(cd):
+    payload = _valid_payload(cd)
+    payload["timestamp_utc"] = "not-a-timestamp"
+    with pytest.raises(ValueError):
+        cd.validate_detection_record_payload(payload)
+
+
+def test_detection_record_invalid_metrics_keys_rejected(cd):
+    payload = _valid_payload(cd)
+    payload["metrics"] = {1: "bad-key"}
+    with pytest.raises(ValueError):
+        cd.validate_detection_record_payload(payload)
+
+
+def test_detection_record_invalid_optional_numeric_rejected(cd):
+    payload = _valid_payload(cd)
+    payload["walk_score"] = "1.08"
+    with pytest.raises(ValueError):
+        cd.validate_detection_record_payload(payload)

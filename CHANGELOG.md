@@ -13,6 +13,11 @@ All notable changes to this project are documented in this file.
 - Added structured JSONL detection event records for longitudinal false-positive analysis.
 - Added deterministic replay fixtures and replay harness support for edge-trace regression tests.
 - Added property-based tests for walk-score monotonicity and cooldown monotonicity invariants.
+- Added schema validation for structured detection JSONL payloads with dedicated tests.
+- Added lightweight throughput benchmark guard test for walk metric computation.
+- Added CI markdown lint workflow for all repository markdown files.
+- Added Linux and Windows package-validate CI workflow for editable install and wheel/sdist artifact validation.
+- Added pinned constraints files for Linux and Windows dev/build tooling reproducibility.
 
 ### Changed
 
@@ -20,6 +25,7 @@ All notable changes to this project are documented in this file.
 - Split the detection loop into pure scoring components plus side-effect dispatch for stricter unit isolation.
 - Updated repository lint workflow to check the full codebase.
 - Added a dedicated GitHub Actions test workflow (Python 3.11/3.12) that installs dev dependencies and runs pytest.
+- Updated lint, test, and Windows build workflows to consume pinned constraints.
 - Updated documentation to reflect safety-first behavior and removal of runtime input grabbing.
 - Updated install/build script messaging to match current lock defaults.
 - Switched build backend to setuptools.build_meta.

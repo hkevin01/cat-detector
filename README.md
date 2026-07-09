@@ -131,8 +131,13 @@ Quality gates currently enforced in repository checks:
 - Full test suite for unit, integration, regression, platform abstraction, and deployment smoke coverage.
 - Deterministic replay traces for edge-case regression scenarios.
 - Property-based invariants for score monotonicity and cooldown logic.
+- Structured detection-record schema validation tests.
+- Lightweight throughput regression guard for scoring hot path.
 - Linting across the full repository scope.
 - CI test workflow across Python 3.11 and 3.12 with dev dependency installation.
+- CI markdown lint workflow for all markdown documentation.
+- Linux and Windows packaging-validation workflow for editable installs and wheel/sdist artifacts.
+- Pinned Linux/Windows constraints files for reproducible tooling resolution.
 - Build metadata and packaging scripts aligned with current defaults.
 
 ## Documentation Notes

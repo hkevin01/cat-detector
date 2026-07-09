@@ -1,0 +1,9 @@
+# Pinned tooling/development constraints for Windows CI and local reproducibility
+build==1.2.2.post1
+hypothesis==6.136.2
+pyinstaller==6.16.0
+pynput==1.8.1
+pytest==9.0.3
+ruff==0.12.3
+twine==6.1.0
+winotify==1.1.0

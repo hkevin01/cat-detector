@@ -38,7 +38,7 @@ jobs:
       #    (Python 3.12 is already on the runner PATH as the default python)
       # -----------------------------------------------------------------------
       - name: Install dependencies
-        run: pip install pyinstaller pynput winotify
+        run: pip install -c constraints/dev-windows.txt pyinstaller pynput winotify
 
       # -----------------------------------------------------------------------
       # 3. Build standalone exe with PyInstaller
