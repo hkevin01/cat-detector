@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Cat Detector Status icon">
+  <rect width="128" height="128" rx="24" fill="#f5f7f2"/>
+  <circle cx="64" cy="64" r="42" fill="#1f7a3f"/>
+  <circle cx="64" cy="64" r="27" fill="#ffffff"/>
+  <circle cx="64" cy="64" r="15" fill="#1f7a3f"/>
+  <path d="M34 34 48 18 55 40Z" fill="#1f7a3f"/>
+  <path d="M94 34 80 18 73 40Z" fill="#1f7a3f"/>
+</svg>

@@ -127,6 +127,43 @@ def test_read_runtime_status_snapshot_derives_freshness(cd, tmp_path):
     assert status["last_detection_reason"] == "walking"
 
 
+def test_read_runtime_status_snapshot_migrates_older_heartbeat_schema(cd, tmp_path):
+    heartbeat = tmp_path / "heartbeat.json"
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-07-09T12:00:00+00:00",
+                "pid": 1234,
+                "platform": "Linux",
+                "sensitivity": "medium",
+                "toddler_mode": False,
+                "lock_profile": "adaptive",
+                "lock_enabled": True,
+                "last_detection_reason": "walking",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _path_override():
+        return heartbeat
+
+    old = cd._heartbeat_path
+    cd._heartbeat_path = _path_override
+    try:
+        status = cd.read_runtime_status_snapshot(
+            now_utc=datetime.fromisoformat("2026-07-09T12:00:20+00:00")
+        )
+    finally:
+        cd._heartbeat_path = old
+
+    assert status["available"] is True
+    assert status["heartbeat_version"] is None
+    assert status["schema_current"] is False
+    assert status["input_freshness_seconds"] is None
+    assert status["input_freshness_label"] == "unknown"
+
+
 def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
     heartbeat = tmp_path / "heartbeat.json"
     page = tmp_path / "status.html"
@@ -170,6 +207,32 @@ def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
     assert "Heartbeat freshness" in html
     assert "Heartbeat schema version" in html
     assert "Last successful input event" in html
+
+
+def test_open_raw_heartbeat_uses_default_opener(cd, tmp_path):
+    heartbeat = tmp_path / "heartbeat.json"
+    heartbeat.write_text("{}", encoding="utf-8")
+
+    def _heartbeat_override():
+        return heartbeat
+
+    called = {"count": 0}
+
+    def _open_override(path):
+        called["count"] += 1
+        return path == heartbeat
+
+    old_heartbeat = cd._heartbeat_path
+    old_open = cd._open_path_with_default_app
+    cd._heartbeat_path = _heartbeat_override
+    cd._open_path_with_default_app = _open_override
+    try:
+        assert cd.open_raw_heartbeat() is True
+    finally:
+        cd._heartbeat_path = old_heartbeat
+        cd._open_path_with_default_app = old_open
+
+    assert called["count"] == 1
 
 
 def test_compute_walk_metrics_returns_consistent_shape(cd):

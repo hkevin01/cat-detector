@@ -22,6 +22,7 @@ dependencies = []
 [project.scripts]
 cat-detector = "cat_detector:main"
 cat-detector-open-status = "cat_detector:open_status_page_main"
+cat-detector-open-heartbeat = "cat_detector:open_raw_heartbeat_main"
 cat-detector-status-tray = "cat_status_tray:main"
 
 [project.optional-dependencies]

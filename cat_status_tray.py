@@ -6,7 +6,7 @@ from __future__ import annotations
 import threading
 import time
 
-from cat_detector import open_status_page, read_runtime_status_snapshot
+from cat_detector import open_raw_heartbeat, open_status_page, read_runtime_status_snapshot
 
 
 def _icon_image(freshness_label: str):
@@ -56,10 +56,14 @@ def main() -> None:
     def _open(_icon, _item):
         open_status_page()
 
+    def _open_raw(_icon, _item):
+        open_raw_heartbeat()
+
     status_item = pystray.MenuItem(lambda _item: _tooltip(read_runtime_status_snapshot()), None, enabled=False)
     icon.menu = pystray.Menu(
         status_item,
         pystray.MenuItem("Open status page", _open),
+        pystray.MenuItem("Open raw heartbeat JSON", _open_raw),
         pystray.MenuItem("Quit", _quit),
     )
 

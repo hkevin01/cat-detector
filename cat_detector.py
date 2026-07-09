@@ -526,6 +526,25 @@ def _status_page_path() -> Path:
     return _state_dir() / "status.html"
 
 
+def _open_path_with_default_app(path: Path) -> bool:
+    """Open a path with the platform default app/browser."""
+    try:
+        if _PLATFORM == "Windows" and hasattr(os, "startfile"):
+            os.startfile(str(path))
+            return True
+        if _PLATFORM == "Linux" and shutil.which("xdg-open"):
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        return bool(webbrowser.open(path.as_uri()))
+    except Exception as exc:
+        log.warning("Failed to open path %s: %s", path, exc)
+        return False
+
+
 def read_runtime_status_snapshot(now_utc: datetime | None = None) -> dict:
     """Read the latest heartbeat and derive freshness metadata for UI surfaces."""
     if now_utc is None:
@@ -583,26 +602,22 @@ def read_runtime_status_snapshot(now_utc: datetime | None = None) -> dict:
 def open_status_page() -> bool:
     """Open the generated status page using the platform's default browser."""
     write_runtime_status_page()
-    path = _status_page_path()
-    try:
-        if _PLATFORM == "Windows" and hasattr(os, "startfile"):
-            os.startfile(str(path))
-            return True
-        if _PLATFORM == "Linux" and shutil.which("xdg-open"):
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-        return bool(webbrowser.open(path.as_uri()))
-    except Exception as exc:
-        log.warning("Failed to open status page: %s", exc)
+    return _open_path_with_default_app(_status_page_path())
+
+
+def open_raw_heartbeat() -> bool:
+    """Open the raw heartbeat JSON for support and debug workflows."""
+    if not _heartbeat_path().exists():
         return False
+    return _open_path_with_default_app(_heartbeat_path())
 
 
 def open_status_page_main() -> None:
     open_status_page()
+
+
+def open_raw_heartbeat_main() -> None:
+    open_raw_heartbeat()
 
 
 def write_runtime_status_page() -> None:
@@ -678,11 +693,11 @@ def write_runtime_status_page() -> None:
 </body>
 </html>
 """
-    path = _status_page_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+        path = _status_page_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
     except Exception as exc:
-    log.warning("Failed to write runtime status page: %s", exc)
+        log.warning("Failed to write runtime status page: %s", exc)
 
 
 def record_detection_event(record: DetectionRecord) -> None:
