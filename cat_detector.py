@@ -283,19 +283,29 @@ class AdaptiveBaselineCalibrator:
     max_shift: float = BASELINE_MAX_SHIFT
     sample_cap: int = BASELINE_SAMPLE_CAP
     samples: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLE_CAP))
+    _cached_threshold: float | None = None
+    _dirty_count: int = 0
+    _recompute_every: int = 20
 
     def observe(self, score: float) -> None:
         self.samples.append(float(score))
+        self._dirty_count += 1
 
     def threshold(self) -> float:
+        if self._cached_threshold is not None and self._dirty_count < self._recompute_every:
+            return self._cached_threshold
         if len(self.samples) < self.warmup:
-            return self.static_min
+            self._cached_threshold = self.static_min
+            self._dirty_count = 0
+            return self._cached_threshold
         ordered = sorted(self.samples)
         idx = int(0.95 * (len(ordered) - 1))
         p95 = ordered[idx]
         adaptive = p95 + self.margin
         upper = self.static_min + self.max_shift
-        return max(self.static_min, min(adaptive, upper))
+        self._cached_threshold = max(self.static_min, min(adaptive, upper))
+        self._dirty_count = 0
+        return self._cached_threshold
 
 
 def _event_log_path() -> Path:

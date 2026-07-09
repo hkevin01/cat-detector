@@ -7,7 +7,7 @@ import pytest
 try:
     from hypothesis import given
     from hypothesis import strategies as st
-except Exception:
+except ImportError:
     pytest.skip("hypothesis is required for property tests", allow_module_level=True)
 
 

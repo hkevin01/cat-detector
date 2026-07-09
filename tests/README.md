@@ -5,26 +5,33 @@
 The test suite validates five layers:
 
 1. Pure unit logic
+
 - Constants and zone spread math.
 - Walk-confidence score properties.
 
-2. Engine integration
+1. Engine integration
+
 - End-to-end event stream processing through the shared detection engine.
 - Walk, streak, hold/sit, paw press, and cooldown behavior.
 
-3. Regression guardrails
+1. Regression guardrails
+
 - Human typing and navigation patterns that must never trigger detection.
 
-4. Platform abstraction
+1. Platform abstraction
+
 - Notification, lock, and audio side effects under Linux and Windows mocks.
 
-5. Deployment and packaging smoke checks
+1. Deployment and packaging smoke checks
+
 - Project metadata, service file structure, and installer script syntax.
 
-6. Deterministic replay traces
+1. Deterministic replay traces
+
 - Recorded edge-case event traces replayed through the engine for reproducible regressions.
 
-7. Property-based invariants
+1. Property-based invariants
+
 - Score monotonicity and cooldown monotonicity verified over generated input ranges.
 
 ## Test architecture

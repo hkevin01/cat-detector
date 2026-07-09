@@ -19,6 +19,7 @@ All notable changes to this project are documented in this file.
 - Updated detection engine walk trigger to require both threshold gates and minimum confidence score.
 - Split the detection loop into pure scoring components plus side-effect dispatch for stricter unit isolation.
 - Updated repository lint workflow to check the full codebase.
+- Added a dedicated GitHub Actions test workflow (Python 3.11/3.12) that installs dev dependencies and runs pytest.
 - Updated documentation to reflect safety-first behavior and removal of runtime input grabbing.
 - Updated install/build script messaging to match current lock defaults.
 - Switched build backend to setuptools.build_meta.
@@ -29,6 +30,8 @@ All notable changes to this project are documented in this file.
 - Fixed CLI tests that were validating a synthetic parser instead of production parser configuration.
 - Fixed multiple lint violations across test modules (unused imports, ambiguous names, import ordering).
 - Removed stale README statements that described obsolete freeze/grab behavior.
+- Reduced adaptive baseline hot-path overhead by caching thresholds and recomputing periodically.
+- Narrowed optional-property-test skip handling to ImportError so runtime errors are not masked.
 
 ## 2.0.0
 

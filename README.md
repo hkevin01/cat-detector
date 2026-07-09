@@ -132,6 +132,7 @@ Quality gates currently enforced in repository checks:
 - Deterministic replay traces for edge-case regression scenarios.
 - Property-based invariants for score monotonicity and cooldown logic.
 - Linting across the full repository scope.
+- CI test workflow across Python 3.11 and 3.12 with dev dependency installation.
 - Build metadata and packaging scripts aligned with current defaults.
 
 ## Documentation Notes
