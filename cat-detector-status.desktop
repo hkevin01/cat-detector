@@ -7,3 +7,8 @@ Exec=/bin/sh -lc "$HOME/.local/share/cat-detector/venv/bin/cat-detector-open-sta
 Icon=cat-detector-status
 Terminal=false
 Categories=Utility;System;
+Actions=OpenHeartbeat;
+
+[Desktop Action OpenHeartbeat]
+Name=Open Raw Heartbeat JSON
+Exec=/bin/sh -lc "$HOME/.local/share/cat-detector/venv/bin/cat-detector-open-heartbeat"

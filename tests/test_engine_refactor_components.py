@@ -164,6 +164,54 @@ def test_read_runtime_status_snapshot_migrates_older_heartbeat_schema(cd, tmp_pa
     assert status["input_freshness_label"] == "unknown"
 
 
+def test_migrate_heartbeat_payload_adds_missing_fields(cd):
+    payload = {
+        "timestamp_utc": "2026-07-09T12:00:00+00:00",
+        "pid": 1234,
+        "platform": "Linux",
+        "sensitivity": "medium",
+        "toddler_mode": False,
+        "lock_profile": "adaptive",
+        "lock_enabled": True,
+    }
+    migrated = cd.migrate_heartbeat_payload(payload)
+    assert migrated["heartbeat_version"] == cd.HEARTBEAT_SCHEMA_VERSION
+    assert "last_successful_input_event_utc" in migrated
+    assert "last_detection_reason" in migrated
+
+
+def test_migrate_heartbeat_file_rewrites_older_payload(cd, tmp_path):
+    heartbeat = tmp_path / "heartbeat.json"
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-07-09T12:00:00+00:00",
+                "pid": 1234,
+                "platform": "Linux",
+                "sensitivity": "medium",
+                "toddler_mode": False,
+                "lock_profile": "adaptive",
+                "lock_enabled": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _heartbeat_override():
+        return heartbeat
+
+    old = cd._heartbeat_path
+    cd._heartbeat_path = _heartbeat_override
+    try:
+        assert cd.migrate_heartbeat_file() is True
+    finally:
+        cd._heartbeat_path = old
+
+    payload = json.loads(heartbeat.read_text(encoding="utf-8"))
+    assert payload["heartbeat_version"] == cd.HEARTBEAT_SCHEMA_VERSION
+    assert "last_successful_input_event_utc" in payload
+
+
 def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
     heartbeat = tmp_path / "heartbeat.json"
     page = tmp_path / "status.html"

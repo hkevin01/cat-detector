@@ -2,6 +2,9 @@
 
 import os
 
+_icon_file = os.path.join('installer', 'cat-detector-status-tray.ico')
+_icon_file = _icon_file if os.path.isfile(_icon_file) else None
+
 a = Analysis(
     ['cat_status_tray.py'],
     pathex=[],
@@ -41,4 +44,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=_version_file,
+    icon=_icon_file,
 )

@@ -215,6 +215,13 @@ class TestWindowsInstallerAssets:
         text = (ROOT / "cat_status_tray.py").read_text()
         assert "Open raw heartbeat JSON" in text
 
+    def test_windows_build_script_generates_tray_icon(self):
+        text = (ROOT / "scripts" / "build_windows.ps1").read_text()
+        assert "generate_tray_icon.py" in text
+
+    def test_windows_tray_icon_generator_exists(self):
+        assert (ROOT / "scripts" / "generate_tray_icon.py").exists()
+
     def test_windows_build_is_windowless_for_background_use(self):
         text = (ROOT / "cat_detector.spec").read_text()
         assert "console=False" in text
@@ -262,6 +269,11 @@ class TestLinuxStatusLauncher:
         text = (ROOT / "cat-detector-status.desktop").read_text()
         assert "Icon=cat-detector-status" in text
 
+    def test_desktop_launcher_has_raw_heartbeat_action(self):
+        text = (ROOT / "cat-detector-status.desktop").read_text()
+        assert "Actions=OpenHeartbeat;" in text
+        assert "cat-detector-open-heartbeat" in text
+
     def test_desktop_icon_asset_exists(self):
         assert (ROOT / "cat-detector-status.svg").exists()
 
@@ -275,3 +287,8 @@ class TestWindowsInstallerSmokeWorkflow:
         assert "cat-detector.exe" in text
         assert "cat-detector-status-tray.exe" in text
         assert "cat-detector-installer" in text
+
+    def test_workflow_asserts_startup_run_entries_are_opt_in(self):
+        text = (ROOT / ".github" / "workflows" / "windows-installer-smoke.yml").read_text()
+        assert "Cat Detector Status" in text
+        assert "should not exist without startup task" in text

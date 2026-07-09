@@ -23,6 +23,7 @@ jobs:
       - name: Build Windows executables
         shell: pwsh
         run: |
+          python scripts/generate_tray_icon.py
           pyinstaller --noconfirm --clean cat_detector.spec
           pyinstaller --noconfirm --clean cat_status_tray.spec
           if (!(Test-Path "dist/cat-detector.exe")) { throw "cat-detector.exe missing" }
@@ -47,6 +48,15 @@ jobs:
           Start-Process -FilePath $env:INSTALLER_PATH -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=$target" -Wait
           if (!(Test-Path (Join-Path $target "cat-detector.exe"))) { throw "Installed cat-detector.exe missing" }
           if (!(Test-Path (Join-Path $target "cat-detector-status-tray.exe"))) { throw "Installed tray exe missing" }
+
+      - name: Assert startup Run entries remain opt-in
+        shell: pwsh
+        run: |
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          $mainValue = (Get-ItemProperty -Path $runKey -Name "Cat Detector" -ErrorAction SilentlyContinue)
+          $trayValue = (Get-ItemProperty -Path $runKey -Name "Cat Detector Status" -ErrorAction SilentlyContinue)
+          if ($null -ne $mainValue) { throw "Main startup Run entry should not exist without startup task" }
+          if ($null -ne $trayValue) { throw "Tray startup Run entry should not exist without startup task" }
 
       - name: Verify installer payload assumptions
         shell: pwsh

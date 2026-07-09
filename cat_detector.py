@@ -599,6 +599,28 @@ def read_runtime_status_snapshot(now_utc: datetime | None = None) -> dict:
     }
 
 
+def migrate_heartbeat_payload(payload: dict) -> dict:
+    """Upgrade older heartbeat payloads to the current schema shape."""
+    migrated = dict(payload)
+    migrated.setdefault("heartbeat_version", HEARTBEAT_SCHEMA_VERSION)
+    migrated.setdefault("last_successful_input_event_utc", None)
+    migrated.setdefault("last_detection_reason", None)
+    return migrated
+
+
+def migrate_heartbeat_file() -> bool:
+    """Rewrite an older heartbeat file to the current schema when needed."""
+    path = _heartbeat_path()
+    if not path.exists():
+        return False
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    migrated = migrate_heartbeat_payload(payload)
+    if migrated == payload:
+        return False
+    path.write_text(json.dumps(migrated, sort_keys=True), encoding="utf-8")
+    return True
+
+
 def open_status_page() -> bool:
     """Open the generated status page using the platform's default browser."""
     write_runtime_status_page()

@@ -44,6 +44,7 @@ if ((-not (Test-Path "cat_detector.spec")) -or (-not (Test-Path "cat_status_tray
     exit 1
 }
 
+python scripts\generate_tray_icon.py
 pyinstaller --noconfirm --clean cat_detector.spec
 pyinstaller --noconfirm --clean cat_status_tray.spec
 
