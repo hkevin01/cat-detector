@@ -1,0 +1,49 @@
+name: Package Smoke (Isolated)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  isolated-smoke:
+    name: Isolated Build + Install Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build artifacts in isolated environment
+        run: |
+          python -m venv .venv-build
+          . .venv-build/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build --sdist --wheel
+
+      - name: Smoke install wheel in fresh environment
+        run: |
+          python -m venv .venv-wheel
+          . .venv-wheel/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          python - <<'PY'
+          import cat_detector
+          assert hasattr(cat_detector, "main")
+          print("Wheel smoke import OK")
+          PY
+          python -m pip check
+
+      - name: Smoke install sdist in fresh environment
+        run: |
+          python -m venv .venv-sdist
+          . .venv-sdist/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.tar.gz
+          python - <<'PY'
+          import cat_detector
+          assert hasattr(cat_detector, "main")
+          print("Sdist smoke import OK")
+          PY
+          python -m pip check

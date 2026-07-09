@@ -73,12 +73,13 @@ def cd():
 
 class _FakeArgs:
     def __init__(self, sensitivity="medium", toddler=False,
-                 lock=False, sound=False, pause_secs=0):
+                 lock=False, sound=False, pause_secs=0, lock_profile=None):
         self.sensitivity = sensitivity
         self.toddler     = toddler
         self.lock        = lock
         self.sound       = sound
         self.pause_secs  = pause_secs
+        self.lock_profile = lock_profile
 
 
 class EngineHarness:
@@ -99,6 +100,7 @@ class EngineHarness:
         self._eq   = queue.SimpleQueue()
         self._args = _FakeArgs(**args_kw)
         self.detections: list[str] = []
+        self.records = []
 
     def __enter__(self):
         import threading
@@ -108,9 +110,15 @@ class EngineHarness:
         )
         self._p_lock  = mock.patch.object(self._cd, "lock_screen")
         self._p_sound = mock.patch.object(self._cd, "play_meow")
+        self._p_record = mock.patch.object(
+            self._cd,
+            "record_detection_event",
+            side_effect=lambda rec: self.records.append(rec),
+        )
         self._p_notify.start()
         self._p_lock.start()
         self._p_sound.start()
+        self._p_record.start()
         self._thread = threading.Thread(
             target=self._cd._detection_engine,
             args=(self._eq, self._args),
@@ -123,6 +131,7 @@ class EngineHarness:
         self._p_notify.stop()
         self._p_lock.stop()
         self._p_sound.stop()
+        self._p_record.stop()
 
     def key_down(self, code: int):
         self._eq.put(("down", code))

@@ -114,6 +114,7 @@ TODDLER_LOCK_DELAY    = 0     # lock immediately — no 2-second grace period
 LOCK_PROFILE_DEFAULT = "all"
 LOCK_PROFILE_ALL = "all"
 LOCK_PROFILE_HIGH_RISK = "high-risk"
+LOCK_PROFILE_ADAPTIVE = "adaptive"
 LOCK_PROFILE_ENV = "CAT_DETECTOR_LOCK_PROFILE"
 HIGH_RISK_REASONS = {"sitting/standing", "enter+simultaneous"}
 LOCK_HARD_DISABLE_ENV = "CAT_DETECTOR_DISABLE_LOCK"
@@ -315,6 +316,10 @@ class DetectionRecord:
     sensitivity: str
     toddler_mode: bool
     metrics: dict
+    action_outcome: str
+    lock_profile: str
+    reason_severity: float
+    adaptive_medium_escalated: bool
     walk_score: float | None = None
     walk_threshold: float | None = None
 
@@ -326,6 +331,10 @@ DETECTION_RECORD_REQUIRED_FIELDS = {
     "sensitivity",
     "toddler_mode",
     "metrics",
+    "action_outcome",
+    "lock_profile",
+    "reason_severity",
+    "adaptive_medium_escalated",
     "walk_score",
     "walk_threshold",
 }
@@ -353,6 +362,17 @@ def validate_detection_record_payload(payload: dict) -> None:
         raise ValueError("Detection record toddler_mode must be a bool")
     if not isinstance(payload["metrics"], dict):
         raise ValueError("Detection record metrics must be an object")
+    if payload.get("action_outcome") not in {"locked", "neutralized-only"}:
+        raise ValueError("Detection record action_outcome must be 'locked' or 'neutralized-only'")
+    if not isinstance(payload.get("lock_profile"), str):
+        raise ValueError("Detection record lock_profile must be a string")
+    reason_severity = payload.get("reason_severity")
+    if not isinstance(reason_severity, (int, float)):
+        raise ValueError("Detection record reason_severity must be numeric")
+    if not (0.0 <= float(reason_severity) <= 1.0):
+        raise ValueError("Detection record reason_severity must be in [0.0, 1.0]")
+    if not isinstance(payload.get("adaptive_medium_escalated"), bool):
+        raise ValueError("Detection record adaptive_medium_escalated must be a bool")
     if not all(isinstance(k, str) for k in payload["metrics"].keys()):
         raise ValueError("Detection record metric keys must be strings")
 
@@ -393,6 +413,85 @@ class AdaptiveBaselineCalibrator:
         self._cached_threshold = max(self.static_min, min(adaptive, upper))
         self._dirty_count = 0
         return self._cached_threshold
+
+
+@dataclass
+class AdaptiveRiskWindowCalibrator:
+    """Per-reason adaptive windowing for medium-risk lock escalation."""
+    min_window_secs: float = 20.0
+    max_window_secs: float = 120.0
+    escalate_min_events: int = 3
+    severity_floor: float = 0.60
+    alpha: float = 0.25
+    _timestamps: dict[str, deque] = field(default_factory=dict)
+    _severities: dict[str, deque] = field(default_factory=dict)
+    _last_seen: dict[str, float] = field(default_factory=dict)
+    _interval_ewma: dict[str, float] = field(default_factory=dict)
+
+    def _window_secs_for(self, reason: str) -> float:
+        ewma = self._interval_ewma.get(reason, 25.0)
+        # A few cadence intervals define the personalized medium-risk window.
+        window = ewma * 4.0
+        return max(self.min_window_secs, min(window, self.max_window_secs))
+
+    def observe_and_should_escalate(self, reason: str, now: float, severity: float) -> bool:
+        if reason in HIGH_RISK_REASONS:
+            return False
+
+        last = self._last_seen.get(reason)
+        if last is not None:
+            interval = max(0.001, now - last)
+            prev = self._interval_ewma.get(reason, interval)
+            self._interval_ewma[reason] = (self.alpha * interval) + ((1.0 - self.alpha) * prev)
+        self._last_seen[reason] = now
+
+        ts = self._timestamps.setdefault(reason, deque(maxlen=128))
+        sv = self._severities.setdefault(reason, deque(maxlen=128))
+        ts.append(now)
+        sv.append(float(severity))
+
+        cutoff = now - self._window_secs_for(reason)
+        while ts and ts[0] < cutoff:
+            ts.popleft()
+            sv.popleft()
+
+        if len(ts) < self.escalate_min_events:
+            return False
+        avg_severity = sum(sv) / max(1, len(sv))
+        return avg_severity >= self.severity_floor
+
+
+def reason_severity_weight(reason: str, metrics: dict | None = None) -> float:
+    """Return normalized urgency confidence in [0.0, 1.0] for policy analytics."""
+    metrics = metrics or {}
+    if reason == "sitting/standing":
+        repeats = int(metrics.get("max_repeats", 0) or 0)
+        if repeats >= 25:
+            return 1.00
+        if repeats >= 18:
+            return 0.96
+        return 0.90
+    if reason == "enter+simultaneous":
+        simultaneous = int(metrics.get("simultaneous", 0) or 0)
+        return 1.00 if simultaneous >= 4 else 0.97
+    if reason == "walking":
+        raw = metrics.get("score")
+        if raw is not None:
+            try:
+                return max(0.40, min(0.95, float(raw) / 1.20))
+            except (TypeError, ValueError):
+                pass
+        return 0.70
+    if reason == "zone hopping":
+        far_hops = int(metrics.get("far_hops", 0) or 0)
+        return min(0.90, 0.58 + (0.06 * far_hops))
+    if reason == "paw press":
+        simultaneous = int(metrics.get("simultaneous", 0) or 0)
+        return min(0.90, 0.55 + (0.08 * simultaneous))
+    if reason == "key streak":
+        count = int(metrics.get("count", 0) or 0)
+        return min(0.85, 0.50 + (0.04 * count))
+    return 0.50
 
 
 def _event_log_path() -> Path:
@@ -485,21 +584,32 @@ def lock_profile(args) -> str:
     if not profile:
         profile = os.environ.get(LOCK_PROFILE_ENV, LOCK_PROFILE_DEFAULT)
     profile = str(profile).strip().lower()
-    if profile not in {LOCK_PROFILE_ALL, LOCK_PROFILE_HIGH_RISK}:
+    if profile not in {LOCK_PROFILE_ALL, LOCK_PROFILE_HIGH_RISK, LOCK_PROFILE_ADAPTIVE}:
         return LOCK_PROFILE_DEFAULT
     return profile
 
 
-def should_lock_for_reason(args, reason: str) -> bool:
+def policy_should_lock(profile: str, reason: str, adaptive_medium_escalated: bool = False) -> bool:
+    """Pure policy function for lock decision by profile and reason."""
+    if profile == LOCK_PROFILE_ALL:
+        return True
+    if reason in HIGH_RISK_REASONS:
+        return True
+    if profile == LOCK_PROFILE_HIGH_RISK:
+        return False
+    if profile == LOCK_PROFILE_ADAPTIVE:
+        return adaptive_medium_escalated
+    return True
+
+
+def should_lock_for_reason(args, reason: str, adaptive_medium_escalated: bool = False) -> bool:
     """Return True when current policy requires screen lock for this reason."""
     if not getattr(args, "lock", False):
         return False
     if os.environ.get(LOCK_HARD_DISABLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
         return False
     profile = lock_profile(args)
-    if profile == LOCK_PROFILE_ALL:
-        return True
-    return reason in HIGH_RISK_REASONS
+    return policy_should_lock(profile, reason, adaptive_medium_escalated)
 
 
 def reset_lock_circuit_state() -> None:
@@ -525,14 +635,75 @@ def lock_circuit_allows(now: float | None = None) -> bool:
     return True
 
 
-def dispatch_detection_actions(args, message: str, reason: str) -> None:
+def dispatch_detection_actions(
+    args,
+    message: str,
+    reason: str,
+    adaptive_medium_escalated: bool = False,
+) -> str:
     """Execute side effects for a detection event."""
     notify(message)
     neutralize_active_input()
     if args.sound:
         play_meow()
-    if should_lock_for_reason(args, reason) and lock_circuit_allows():
+    if (
+        should_lock_for_reason(args, reason, adaptive_medium_escalated)
+        and lock_circuit_allows()
+    ):
         lock_screen()
+        return "locked"
+    return "neutralized-only"
+
+
+def score_policy_pairs_from_replay_samples(
+    samples: list[dict],
+    profiles: tuple[str, ...] = (LOCK_PROFILE_ALL, LOCK_PROFILE_HIGH_RISK, LOCK_PROFILE_ADAPTIVE),
+) -> dict[tuple[str, str], dict]:
+    """
+    Compute precision and disruption by (reason, profile) over replay samples.
+
+    Sample shape:
+      {
+        "reason": str,
+        "expected_positive": bool,
+        "adaptive_medium_escalated": bool (optional, default False),
+      }
+    """
+    buckets: dict[tuple[str, str], dict[str, int]] = {}
+    for sample in samples:
+        reason = str(sample["reason"])
+        expected_positive = bool(sample["expected_positive"])
+        adaptive_flag = bool(sample.get("adaptive_medium_escalated", False))
+        for profile in profiles:
+            key = (reason, profile)
+            state = buckets.setdefault(
+                key,
+                {"tp_locks": 0, "fp_locks": 0, "positive_total": 0, "negative_total": 0, "locks": 0},
+            )
+            if expected_positive:
+                state["positive_total"] += 1
+            else:
+                state["negative_total"] += 1
+            if policy_should_lock(profile, reason, adaptive_flag):
+                state["locks"] += 1
+                if expected_positive:
+                    state["tp_locks"] += 1
+                else:
+                    state["fp_locks"] += 1
+
+    scored: dict[tuple[str, str], dict] = {}
+    for key, state in buckets.items():
+        tp = state["tp_locks"]
+        fp = state["fp_locks"]
+        neg = state["negative_total"]
+        precision = (tp / (tp + fp)) if (tp + fp) else None
+        disruption = (fp / neg) if neg else 0.0
+        scored[key] = {
+            **state,
+            "precision": precision,
+            "disruption": disruption,
+        }
+    return scored
 
 
 def compute_walk_metrics(key_times: dict, now: float) -> tuple[set[int], WalkMetrics]:
@@ -756,6 +927,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     entity        = "toddler" if args.toddler else "cat"
     walk_score_min = WALK_SCORE_MIN["toddler"] if args.toddler else WALK_SCORE_MIN[args.sensitivity]
     baseline = AdaptiveBaselineCalibrator(static_min=walk_score_min)
+    risk_window = AdaptiveRiskWindowCalibrator()
 
     key_times:           dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
@@ -765,11 +937,24 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
     def _fire(reason: str, walk_score: float | None = None, walk_threshold: float | None = None, **log_kw):
         nonlocal last_detection
-        last_detection = time.monotonic()
+        now_mono = time.monotonic()
+        last_detection = now_mono
         msg = random.choice(messages)
         log.warning("%s DETECTED (%s)! %s",
                     entity.upper(), reason,
                     " ".join(f"{k}={v}" for k, v in log_kw.items()))
+        severity = reason_severity_weight(reason, log_kw)
+        adaptive_medium_escalated = risk_window.observe_and_should_escalate(
+            reason,
+            now_mono,
+            severity,
+        )
+        action_outcome = dispatch_detection_actions(
+            args,
+            msg,
+            reason,
+            adaptive_medium_escalated=adaptive_medium_escalated,
+        )
         record = DetectionRecord(
             timestamp_utc=datetime.now(timezone.utc).isoformat(),
             entity=entity,
@@ -777,12 +962,14 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
             sensitivity=args.sensitivity,
             toddler_mode=bool(args.toddler),
             metrics=log_kw,
+            action_outcome=action_outcome,
+            lock_profile=lock_profile(args),
+            reason_severity=severity,
+            adaptive_medium_escalated=adaptive_medium_escalated,
             walk_score=walk_score,
             walk_threshold=walk_threshold,
         )
         record_detection_event(record)
-
-        dispatch_detection_actions(args, msg, reason)
 
         key_times.clear()
         key_hold_times.clear()

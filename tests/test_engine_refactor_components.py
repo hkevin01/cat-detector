@@ -33,6 +33,10 @@ def test_record_detection_event_writes_jsonl(cd, tmp_path):
         sensitivity="medium",
         toddler_mode=False,
         metrics={"keys": 24, "rate": "12.0/s", "spread": "67%"},
+        action_outcome="neutralized-only",
+        lock_profile="high-risk",
+        reason_severity=0.71,
+        adaptive_medium_escalated=False,
         walk_score=1.08,
         walk_threshold=1.03,
     )
@@ -191,11 +195,63 @@ def test_high_risk_lock_profile_catches_enter_simultaneous(cd):
         ("high-risk", "key streak", False),
         ("high-risk", "sitting/standing", True),
         ("high-risk", "enter+simultaneous", True),
+        ("adaptive", "walking", False),
+        ("adaptive", "zone hopping", False),
+        ("adaptive", "paw press", False),
+        ("adaptive", "key streak", False),
+        ("adaptive", "sitting/standing", True),
+        ("adaptive", "enter+simultaneous", True),
     ],
 )
 def test_reason_profile_lock_decision_matrix(cd, profile, reason, expected):
     args = SimpleNamespace(sound=False, lock=True, lock_profile=profile)
     assert cd.should_lock_for_reason(args, reason) is expected
+
+
+def test_adaptive_profile_locks_medium_only_when_escalated(cd):
+    args = SimpleNamespace(sound=False, lock=True, lock_profile="adaptive")
+    assert cd.should_lock_for_reason(args, "walking", adaptive_medium_escalated=False) is False
+    assert cd.should_lock_for_reason(args, "walking", adaptive_medium_escalated=True) is True
+
+
+def test_score_policy_pairs_from_replay_samples(cd):
+    samples = [
+        {"reason": "walking", "expected_positive": True, "adaptive_medium_escalated": True},
+        {"reason": "walking", "expected_positive": False, "adaptive_medium_escalated": True},
+        {"reason": "sitting/standing", "expected_positive": True},
+    ]
+    metrics = cd.score_policy_pairs_from_replay_samples(samples)
+
+    walking_high_risk = metrics[("walking", "high-risk")]
+    assert walking_high_risk["locks"] == 0
+    assert walking_high_risk["precision"] is None
+
+    walking_adaptive = metrics[("walking", "adaptive")]
+    assert walking_adaptive["locks"] == 2
+    assert walking_adaptive["precision"] == 0.5
+    assert walking_adaptive["disruption"] == 1.0
+
+    sit_high_risk = metrics[("sitting/standing", "high-risk")]
+    assert sit_high_risk["locks"] == 1
+    assert sit_high_risk["precision"] == 1.0
+
+
+def test_adaptive_risk_window_escalates_repeated_medium_reason(cd):
+    cal = cd.AdaptiveRiskWindowCalibrator(
+        min_window_secs=5.0,
+        max_window_secs=20.0,
+        escalate_min_events=3,
+        severity_floor=0.6,
+    )
+    assert cal.observe_and_should_escalate("walking", 1000.0, 0.7) is False
+    assert cal.observe_and_should_escalate("walking", 1002.0, 0.75) is False
+    assert cal.observe_and_should_escalate("walking", 1004.0, 0.8) is True
+
+
+def test_adaptive_risk_window_keeps_high_risk_strict(cd):
+    cal = cd.AdaptiveRiskWindowCalibrator()
+    assert cal.observe_and_should_escalate("sitting/standing", 1000.0, 0.9) is False
+    assert cal.observe_and_should_escalate("enter+simultaneous", 1001.0, 1.0) is False
 
 
 def test_lock_disable_env_overrides_policy(cd):
