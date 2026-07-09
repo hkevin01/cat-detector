@@ -1,0 +1,57 @@
+name: Windows Installer Smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  installer-smoke:
+    name: Build And Verify Installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller pynput winotify pystray pillow
+
+      - name: Build Windows executables
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean cat_detector.spec
+          pyinstaller --noconfirm --clean cat_status_tray.spec
+          if (!(Test-Path "dist/cat-detector.exe")) { throw "cat-detector.exe missing" }
+          if (!(Test-Path "dist/cat-detector-status-tray.exe")) { throw "cat-detector-status-tray.exe missing" }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { throw "Inno Setup not found" }
+          & $iscc "installer\cat-detector.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with code $LASTEXITCODE" }
+          $installer = Get-ChildItem "dist\cat-detector-installer-*-windows-x64.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Installer artifact missing" }
+          "INSTALLER_PATH=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Silent install into isolated directory
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP "cat-detector-install"
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Start-Process -FilePath $env:INSTALLER_PATH -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=$target" -Wait
+          if (!(Test-Path (Join-Path $target "cat-detector.exe"))) { throw "Installed cat-detector.exe missing" }
+          if (!(Test-Path (Join-Path $target "cat-detector-status-tray.exe"))) { throw "Installed tray exe missing" }
+
+      - name: Verify installer payload assumptions
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP "cat-detector-install"
+          Get-Item (Join-Path $target "cat-detector.exe") | Out-Null
+          Get-Item (Join-Path $target "cat-detector-status-tray.exe") | Out-Null
+          Write-Host "Windows installer smoke validation passed"
