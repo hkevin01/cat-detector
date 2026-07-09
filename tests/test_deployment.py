@@ -38,6 +38,13 @@ class TestImportSmoke:
         for sym in required:
             assert hasattr(cd, sym), f"Missing symbol: {sym}"
 
+    def test_heartbeat_helpers_exist(self, cd):
+        assert hasattr(cd, "_heartbeat_path")
+        assert hasattr(cd, "write_runtime_heartbeat")
+        assert hasattr(cd, "_status_page_path")
+        assert hasattr(cd, "read_runtime_status_snapshot")
+        assert hasattr(cd, "write_runtime_status_page")
+
     def test_cooldown_is_positive(self, cd):
         assert cd.COOLDOWN_SECS > 0
 
@@ -167,6 +174,33 @@ class TestWindowsInstallerAssets:
         text = (ROOT / "installer" / "cat-detector.iss").read_text()
         assert "automatically when you sign in" in text
 
+    def test_inno_setup_uses_per_user_run_registry_entry(self):
+        text = (ROOT / "installer" / "cat-detector.iss").read_text()
+        assert 'Root: HKCU;' in text
+        assert 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' in text
+
+    def test_inno_setup_background_launch_text_present(self):
+        text = (ROOT / "installer" / "cat-detector.iss").read_text()
+        assert "runs in the background" in text
+
     def test_windows_build_is_windowless_for_background_use(self):
         text = (ROOT / "cat_detector.spec").read_text()
         assert "console=False" in text
+
+
+class TestLinuxServiceOverrideTemplate:
+    def test_override_template_exists(self):
+        assert (ROOT / "cat-detector.service.override.conf.example").exists()
+
+    def test_override_template_mentions_restart_policy(self):
+        text = (ROOT / "cat-detector.service.override.conf.example").read_text()
+        assert "Restart=" in text
+        assert "RestartSec=" in text
+
+    def test_install_sh_mentions_override_template(self):
+        text = (ROOT / "install.sh").read_text()
+        assert "override.conf.example" in text
+
+    def test_install_sh_mentions_status_runtime_home(self):
+        text = (ROOT / "install.sh").read_text()
+        assert "Runtime home" in text

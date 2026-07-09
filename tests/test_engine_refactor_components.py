@@ -58,6 +58,103 @@ def test_record_detection_event_writes_jsonl(cd, tmp_path):
     assert payload["walk_score"] == 1.08
 
 
+def test_write_runtime_heartbeat_writes_json(cd, tmp_path):
+    out_file = tmp_path / "heartbeat.json"
+
+    def _path_override():
+        return out_file
+
+    old = cd._heartbeat_path
+    cd._heartbeat_path = _path_override
+    cd._heartbeat_state["last"] = 0.0
+    try:
+        args = SimpleNamespace(sensitivity="medium", toddler=False, lock=True, lock_profile="adaptive")
+        cd.write_runtime_heartbeat(args, force=True, last_detection_reason="walking", now_monotonic=1000.0)
+    finally:
+        cd._heartbeat_path = old
+
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert payload["last_detection_reason"] == "walking"
+    assert payload["lock_profile"] == "adaptive"
+    assert payload["lock_enabled"] is True
+
+
+def test_read_runtime_status_snapshot_derives_freshness(cd, tmp_path):
+    heartbeat = tmp_path / "heartbeat.json"
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-07-09T12:00:00+00:00",
+                "pid": 1234,
+                "platform": "Linux",
+                "sensitivity": "medium",
+                "toddler_mode": False,
+                "lock_profile": "adaptive",
+                "lock_enabled": True,
+                "last_detection_reason": "walking",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _path_override():
+        return heartbeat
+
+    old = cd._heartbeat_path
+    cd._heartbeat_path = _path_override
+    try:
+        status = cd.read_runtime_status_snapshot(
+            now_utc=datetime.fromisoformat("2026-07-09T12:00:20+00:00")
+        )
+    finally:
+        cd._heartbeat_path = old
+
+    assert status["available"] is True
+    assert status["freshness_label"] == "fresh"
+    assert status["last_detection_reason"] == "walking"
+
+
+def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
+    heartbeat = tmp_path / "heartbeat.json"
+    page = tmp_path / "status.html"
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-07-09T12:00:00+00:00",
+                "pid": 1234,
+                "platform": "Linux",
+                "sensitivity": "medium",
+                "toddler_mode": False,
+                "lock_profile": "high-risk",
+                "lock_enabled": True,
+                "last_detection_reason": "zone hopping",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _heartbeat_override():
+        return heartbeat
+
+    def _page_override():
+        return page
+
+    old_heartbeat = cd._heartbeat_path
+    old_page = cd._status_page_path
+    cd._heartbeat_path = _heartbeat_override
+    cd._status_page_path = _page_override
+    try:
+        cd.write_runtime_status_page()
+    finally:
+        cd._heartbeat_path = old_heartbeat
+        cd._status_page_path = old_page
+
+    html = page.read_text(encoding="utf-8")
+    assert "cat-detector status" in html
+    assert "zone hopping" in html
+    assert "Heartbeat freshness" in html
+
+
 def test_compute_walk_metrics_returns_consistent_shape(cd):
     key_times = {30: [1.0, 2.0], 31: [2.1]}
     # engine stores deques; lists also support this limited shape for the helper

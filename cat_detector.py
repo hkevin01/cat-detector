@@ -120,6 +120,7 @@ HIGH_RISK_REASONS = {"sitting/standing", "enter+simultaneous"}
 LOCK_HARD_DISABLE_ENV = "CAT_DETECTOR_DISABLE_LOCK"
 LOCK_CIRCUIT_MIN_INTERVAL_SECS = 180.0
 LOCK_CIRCUIT_MAX_PER_SESSION = 2
+HEARTBEAT_INTERVAL_SECS = 30.0
 
 TODDLER_MESSAGES = [
     "👶 TODDLER ALERT: Tiny hands detected on keyboard!",
@@ -254,6 +255,10 @@ _lock_circuit_state = {
     "last": 0.0,
 }
 _lock_circuit_guard = threading.Lock()
+_heartbeat_state = {
+    "last": 0.0,
+}
+_heartbeat_guard = threading.Lock()
 
 
 def find_keyboards():
@@ -494,9 +499,133 @@ def reason_severity_weight(reason: str, metrics: dict | None = None) -> float:
     return 0.50
 
 
-def _event_log_path() -> Path:
+def _state_dir() -> Path:
+    """Return cross-platform state directory for logs and heartbeat data."""
+    if _PLATFORM == "Windows":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "cat-detector"
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "cat-detector"
     state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return state_home / "cat-detector" / "detections.jsonl"
+    return state_home / "cat-detector"
+
+
+def _event_log_path() -> Path:
+    return _state_dir() / "detections.jsonl"
+
+
+def _heartbeat_path() -> Path:
+    return _state_dir() / "heartbeat.json"
+
+
+def _status_page_path() -> Path:
+        return _state_dir() / "status.html"
+
+
+def read_runtime_status_snapshot(now_utc: datetime | None = None) -> dict:
+        """Read the latest heartbeat and derive freshness metadata for UI surfaces."""
+        if now_utc is None:
+                now_utc = datetime.now(timezone.utc)
+        path = _heartbeat_path()
+        if not path.exists():
+                return {
+                        "available": False,
+                        "freshness_seconds": None,
+                        "freshness_label": "unknown",
+                        "last_detection_reason": None,
+                }
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        ts = datetime.fromisoformat(payload["timestamp_utc"])
+        freshness_seconds = max(0.0, (now_utc - ts).total_seconds())
+        if freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 2:
+                freshness_label = "fresh"
+        elif freshness_seconds <= HEARTBEAT_INTERVAL_SECS * 6:
+                freshness_label = "stale"
+        else:
+                freshness_label = "offline"
+
+        return {
+                **payload,
+                "available": True,
+                "freshness_seconds": freshness_seconds,
+                "freshness_label": freshness_label,
+        }
+
+
+def write_runtime_status_page() -> None:
+        """Write a tiny human-readable status page for background runtime monitoring."""
+        try:
+                status = read_runtime_status_snapshot()
+                if not status.get("available"):
+                        body = "<p>No heartbeat has been recorded yet.</p>"
+                else:
+                        reason = status.get("last_detection_reason") or "none"
+                        body = f"""
+<p><strong>Heartbeat freshness:</strong> <span id=\"freshness-label\">{status['freshness_label']}</span></p>
+<p><strong>Last heartbeat:</strong> <span id=\"heartbeat-ts\">{status['timestamp_utc']}</span></p>
+<p><strong>Last detection reason:</strong> {reason}</p>
+<p><strong>Mode:</strong> sensitivity={status.get('sensitivity')} toddler={status.get('toddler_mode')}</p>
+<p><strong>Lock policy:</strong> profile={status.get('lock_profile')} enabled={status.get('lock_enabled')}</p>
+<p><strong>PID:</strong> {status.get('pid')}</p>
+<p><strong>Freshness age:</strong> <span id=\"freshness-age\">{int(status['freshness_seconds'])}</span> seconds</p>
+"""
+
+                html = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\">
+    <meta http-equiv=\"refresh\" content=\"15\">
+    <title>cat-detector status</title>
+    <style>
+        body {{ font-family: sans-serif; margin: 24px; background: #f7f7f7; color: #222; }}
+        .card {{ max-width: 720px; background: #fff; border: 1px solid #ddd; border-radius: 12px; padding: 20px; }}
+        .fresh {{ color: #0a7a2f; }}
+        .stale {{ color: #a56a00; }}
+        .offline {{ color: #b42318; }}
+    </style>
+</head>
+<body>
+    <div class=\"card\">
+        <h1>cat-detector status</h1>
+        {body}
+    </div>
+    <script>
+        (function () {{
+            const tsText = document.getElementById('heartbeat-ts');
+            const ageEl = document.getElementById('freshness-age');
+            const labelEl = document.getElementById('freshness-label');
+            if (!tsText || !ageEl || !labelEl) return;
+            const ts = new Date(tsText.textContent);
+            function tick() {{
+                const age = Math.max(0, Math.floor((Date.now() - ts.getTime()) / 1000));
+                ageEl.textContent = String(age);
+                labelEl.className = '';
+                if (age <= {int(HEARTBEAT_INTERVAL_SECS * 2)}) {{
+                    labelEl.textContent = 'fresh';
+                    labelEl.classList.add('fresh');
+                }} else if (age <= {int(HEARTBEAT_INTERVAL_SECS * 6)}) {{
+                    labelEl.textContent = 'stale';
+                    labelEl.classList.add('stale');
+                }} else {{
+                    labelEl.textContent = 'offline';
+                    labelEl.classList.add('offline');
+                }}
+            }}
+            tick();
+            window.setInterval(tick, 1000);
+        }})();
+    </script>
+</body>
+</html>
+"""
+                path = _status_page_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(html, encoding="utf-8")
+        except Exception as exc:
+                log.warning("Failed to write runtime status page: %s", exc)
 
 
 def record_detection_event(record: DetectionRecord) -> None:
@@ -510,6 +639,42 @@ def record_detection_event(record: DetectionRecord) -> None:
             fp.write(json.dumps(payload, sort_keys=True) + "\n")
     except Exception as exc:
         log.warning("Failed to write detection event record: %s", exc)
+
+
+def write_runtime_heartbeat(
+    args,
+    *,
+    force: bool = False,
+    last_detection_reason: str | None = None,
+    now_monotonic: float | None = None,
+) -> None:
+    """Persist a lightweight runtime heartbeat for background health monitoring."""
+    if now_monotonic is None:
+        now_monotonic = time.monotonic()
+    with _heartbeat_guard:
+        last = _heartbeat_state["last"]
+        if not force and last and (now_monotonic - last) < HEARTBEAT_INTERVAL_SECS:
+            return
+        _heartbeat_state["last"] = now_monotonic
+
+    try:
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
+            "platform": _PLATFORM,
+            "sensitivity": getattr(args, "sensitivity", "medium"),
+            "toddler_mode": bool(getattr(args, "toddler", False)),
+            "lock_profile": lock_profile(args),
+            "lock_enabled": bool(getattr(args, "lock", False)),
+            "last_detection_reason": last_detection_reason,
+        }
+        path = _heartbeat_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fp:
+            json.dump(payload, fp, sort_keys=True)
+        write_runtime_status_page()
+    except Exception as exc:
+        log.warning("Failed to write runtime heartbeat: %s", exc)
 
 
 def _linux_soft_neutralize_input() -> bool:
@@ -970,6 +1135,12 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
             walk_threshold=walk_threshold,
         )
         record_detection_event(record)
+        write_runtime_heartbeat(
+            args,
+            force=True,
+            last_detection_reason=reason,
+            now_monotonic=now_mono,
+        )
 
         key_times.clear()
         key_hold_times.clear()
@@ -988,14 +1159,17 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         thresh["min_paw"], HOLD_MIN_REPEATS,
         "enabled" if args.lock else "disabled",
     )
+    write_runtime_heartbeat(args, force=True)
 
     while True:
         try:
             kind, code = event_queue.get(timeout=1.0)
         except queue.Empty:
+            write_runtime_heartbeat(args)
             continue
 
         now = time.monotonic()
+        write_runtime_heartbeat(args, now_monotonic=now)
 
         # ── Key up ──────────────────────────────────────────────────────────
         if kind == "up":

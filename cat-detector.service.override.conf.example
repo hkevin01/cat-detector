@@ -1,0 +1,17 @@
+[Service]
+# Copy this file to:
+#   ~/.config/systemd/user/cat-detector.service.d/override.conf
+# Then run:
+#   systemctl --user daemon-reload
+#   systemctl --user restart cat-detector.service
+
+# Quieter restart policy example:
+# Restart=on-failure
+# RestartSec=120
+
+# Strict containment example:
+# Restart=always
+# RestartSec=15
+
+# Disable locking without touching the base unit:
+# Environment=CAT_DETECTOR_DISABLE_LOCK=1

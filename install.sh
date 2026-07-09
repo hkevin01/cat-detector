@@ -45,8 +45,11 @@ echo "[ok] Runtime installed in ${VENV_DIR}"
 
 # ── 4. Install systemd user service ──────────────────────────────────────────
 SERVICE_DIR="${HOME}/.config/systemd/user"
+OVERRIDE_DIR="${SERVICE_DIR}/cat-detector.service.d"
 mkdir -p "$SERVICE_DIR"
+mkdir -p "$OVERRIDE_DIR"
 cp "$(dirname "$0")/cat-detector.service" "$SERVICE_DIR/"
+cp "${SCRIPT_DIR}/cat-detector.service.override.conf.example" "${OVERRIDE_DIR}/override.conf.example"
 systemctl --user daemon-reload
 systemctl --user enable cat-detector.service
 if [[ "$JUST_ADDED_INPUT_GROUP" -eq 0 ]]; then
@@ -67,5 +70,6 @@ fi
 echo
 echo "=== Installation complete! ==="
 echo "  Runtime home    :  ${APP_HOME}"
+echo "  Override sample :  ${OVERRIDE_DIR}/override.conf.example"
 echo "  Status          :  systemctl --user status cat-detector"
 echo "  Logs            :  journalctl --user -u cat-detector -f"
