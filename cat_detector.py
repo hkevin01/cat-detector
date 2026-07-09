@@ -111,6 +111,12 @@ TODDLER_STREAK_WINDOW = 0.6   # seconds
 TODDLER_STREAK_MIN    = 3     # 3 hits of same key in 0.6 s → toddler
 TODDLER_LOCK_DELAY    = 0     # lock immediately — no 2-second grace period
 
+LOCK_PROFILE_DEFAULT = "all"
+LOCK_PROFILE_ALL = "all"
+LOCK_PROFILE_HIGH_RISK = "high-risk"
+LOCK_PROFILE_ENV = "CAT_DETECTOR_LOCK_PROFILE"
+HIGH_RISK_REASONS = {"sitting/standing", "enter+simultaneous"}
+
 TODDLER_MESSAGES = [
     "👶 TODDLER ALERT: Tiny hands detected on keyboard!",
     "🍼 Little one found the keyboard. Lockdown initiated.",
@@ -464,13 +470,34 @@ def neutralize_active_input() -> None:
         log.debug("Soft mitigation unavailable on this platform/runtime")
 
 
-def dispatch_detection_actions(args, message: str) -> None:
+def lock_profile(args) -> str:
+    """Resolve lock profile from args or environment with safe fallback."""
+    profile = getattr(args, "lock_profile", None)
+    if not profile:
+        profile = os.environ.get(LOCK_PROFILE_ENV, LOCK_PROFILE_DEFAULT)
+    profile = str(profile).strip().lower()
+    if profile not in {LOCK_PROFILE_ALL, LOCK_PROFILE_HIGH_RISK}:
+        return LOCK_PROFILE_DEFAULT
+    return profile
+
+
+def should_lock_for_reason(args, reason: str) -> bool:
+    """Return True when current policy requires screen lock for this reason."""
+    if not getattr(args, "lock", False):
+        return False
+    profile = lock_profile(args)
+    if profile == LOCK_PROFILE_ALL:
+        return True
+    return reason in HIGH_RISK_REASONS
+
+
+def dispatch_detection_actions(args, message: str, reason: str) -> None:
     """Execute side effects for a detection event."""
     notify(message)
     neutralize_active_input()
     if args.sound:
         play_meow()
-    if args.lock:
+    if should_lock_for_reason(args, reason):
         lock_screen()
 
 
@@ -721,7 +748,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         )
         record_detection_event(record)
 
-        dispatch_detection_actions(args, msg)
+        dispatch_detection_actions(args, msg, reason)
 
         key_times.clear()
         key_hold_times.clear()
