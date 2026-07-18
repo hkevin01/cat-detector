@@ -67,6 +67,15 @@ def cd():
     return cat_detector
 
 
+@pytest.fixture(autouse=True)
+def reset_runtime_safety_state(cd):
+    """Keep lock/action safety state deterministic across tests."""
+    cd.reset_lock_circuit_state()
+    if hasattr(cd, "reset_action_safety_state"):
+        cd.reset_action_safety_state(now=0.0)
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Engine harness
 # ---------------------------------------------------------------------------

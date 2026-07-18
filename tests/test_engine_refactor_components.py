@@ -371,8 +371,18 @@ def test_high_risk_lock_profile_locks_only_for_high_risk_reason(cd):
         cd.play_meow = lambda *_a, **_kw: None
         cd.lock_screen = lambda *_a, **_kw: called.__setitem__("lock", called["lock"] + 1)
 
-        cd.dispatch_detection_actions(args, "cat detected", "walking")
-        cd.dispatch_detection_actions(args, "cat detected", "sitting/standing")
+        cd.dispatch_detection_actions(
+            args,
+            "cat detected",
+            "walking",
+            now_monotonic=1000.0,
+        )
+        cd.dispatch_detection_actions(
+            args,
+            "cat detected",
+            "sitting/standing",
+            now_monotonic=1000.0 + cd.ACTION_MIN_INTERVAL_SECS + 0.2,
+        )
     finally:
         cd.notify = old_notify
         cd.neutralize_active_input = old_neutralize

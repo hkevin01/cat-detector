@@ -142,6 +142,14 @@ HIGH_RISK_REASONS = {"sitting/standing", "enter+simultaneous"}
 LOCK_HARD_DISABLE_ENV = "CAT_DETECTOR_DISABLE_LOCK"
 LOCK_CIRCUIT_MIN_INTERVAL_SECS = 180.0
 LOCK_CIRCUIT_MAX_PER_SESSION = 2
+ACTION_MIN_INTERVAL_SECS = 1.0
+ACTION_NOTIFY_TIMEOUT_SECS = 0.75
+ACTION_NEUTRALIZE_TIMEOUT_SECS = 0.75
+ACTION_SOUND_TIMEOUT_SECS = 0.75
+ACTION_LOCK_TIMEOUT_SECS = 1.50
+ACTION_FAILURE_MAX_CONSECUTIVE = 3
+ACTION_LOCK_DISABLE_WINDOW_SECS = 900.0
+ACTION_LOCK_STARTUP_GRACE_SECS = 8.0
 HEARTBEAT_INTERVAL_SECS = 30.0
 HEARTBEAT_SCHEMA_VERSION = 1
 
@@ -278,6 +286,14 @@ _lock_circuit_state = {
     "last": 0.0,
 }
 _lock_circuit_guard = threading.Lock()
+_action_dispatch_guard = threading.Lock()
+_action_safety_state = {
+    "last_dispatch": 0.0,
+    "consecutive_failures": 0,
+    "lock_disabled_until": 0.0,
+    "process_started": time.monotonic(),
+}
+_action_safety_guard = threading.Lock()
 _heartbeat_state = {
     "last": 0.0,
 }
@@ -1276,6 +1292,72 @@ def reset_lock_circuit_state() -> None:
         _lock_circuit_state["last"] = 0.0
 
 
+def reset_action_safety_state(now: float | None = None) -> None:
+    """Reset action-safety counters; useful for tests and controlled restarts."""
+    if now is None:
+        now = time.monotonic()
+    with _action_safety_guard:
+        _action_safety_state["last_dispatch"] = 0.0
+        _action_safety_state["consecutive_failures"] = 0
+        _action_safety_state["lock_disabled_until"] = 0.0
+        _action_safety_state["process_started"] = float(now)
+
+
+def _run_with_timeout(fn, timeout_secs: float, label: str) -> bool:
+    """Run a side-effect function with a hard timeout to avoid hangs."""
+    outcome = {"ok": True}
+
+    def _target() -> None:
+        try:
+            fn()
+        except Exception as exc:
+            outcome["ok"] = False
+            log.warning("Action side-effect failed (%s): %s", label, exc)
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout=max(0.05, float(timeout_secs)))
+    if thread.is_alive():
+        log.warning("Action side-effect timed out (%s)", label)
+        return False
+    return bool(outcome["ok"])
+
+
+def _note_action_failure(now: float) -> None:
+    with _action_safety_guard:
+        failures = int(_action_safety_state["consecutive_failures"]) + 1
+        _action_safety_state["consecutive_failures"] = failures
+        if failures >= ACTION_FAILURE_MAX_CONSECUTIVE:
+            _action_safety_state["lock_disabled_until"] = max(
+                float(_action_safety_state["lock_disabled_until"]),
+                now + ACTION_LOCK_DISABLE_WINDOW_SECS,
+            )
+
+
+def _note_action_success() -> None:
+    with _action_safety_guard:
+        if _action_safety_state["consecutive_failures"] > 0:
+            _action_safety_state["consecutive_failures"] = int(_action_safety_state["consecutive_failures"]) - 1
+
+
+def _dispatch_throttle_allows(now: float) -> bool:
+    with _action_safety_guard:
+        last = float(_action_safety_state["last_dispatch"])
+        if last and (now - last) < ACTION_MIN_INTERVAL_SECS:
+            return False
+        _action_safety_state["last_dispatch"] = now
+    return True
+
+
+def _lock_safety_allows(now: float) -> bool:
+    with _action_safety_guard:
+        if (now - float(_action_safety_state["process_started"])) < ACTION_LOCK_STARTUP_GRACE_SECS:
+            return False
+        if float(_action_safety_state["lock_disabled_until"]) > now:
+            return False
+    return True
+
+
 def lock_circuit_allows(now: float | None = None) -> bool:
     """Safety gate to avoid repeated lock loops during persistent event storms."""
     if now is None:
@@ -1297,19 +1379,52 @@ def dispatch_detection_actions(
     message: str,
     reason: str,
     adaptive_medium_escalated: bool = False,
+    now_monotonic: float | None = None,
 ) -> str:
     """Execute side effects for a detection event."""
-    notify(message)
-    neutralize_active_input()
-    if args.sound:
-        play_meow()
-    if (
-        should_lock_for_reason(args, reason, adaptive_medium_escalated)
-        and lock_circuit_allows()
-    ):
-        lock_screen()
-        return "locked"
-    return "neutralized-only"
+    if now_monotonic is None:
+        now_monotonic = time.monotonic()
+
+    if not _action_dispatch_guard.acquire(blocking=False):
+        log.warning("Detection action skipped: action dispatcher busy")
+        return "neutralized-only"
+
+    try:
+        if not _dispatch_throttle_allows(now_monotonic):
+            log.warning("Detection action skipped: throttle active")
+            return "neutralized-only"
+
+        ok_notify = _run_with_timeout(
+            lambda: notify(message),
+            ACTION_NOTIFY_TIMEOUT_SECS,
+            "notify",
+        )
+        if not ok_notify:
+            _note_action_failure(now_monotonic)
+
+        ok_neutralize = _run_with_timeout(
+            neutralize_active_input,
+            ACTION_NEUTRALIZE_TIMEOUT_SECS,
+            "neutralize",
+        )
+        if not ok_neutralize:
+            _note_action_failure(now_monotonic)
+
+        if args.sound:
+            ok_sound = _run_with_timeout(play_meow, ACTION_SOUND_TIMEOUT_SECS, "sound")
+            if not ok_sound:
+                _note_action_failure(now_monotonic)
+
+        should_lock = should_lock_for_reason(args, reason, adaptive_medium_escalated)
+        if should_lock and _lock_safety_allows(now_monotonic) and lock_circuit_allows(now_monotonic):
+            ok_lock = _run_with_timeout(lock_screen, ACTION_LOCK_TIMEOUT_SECS, "lock")
+            if ok_lock:
+                _note_action_success()
+                return "locked"
+            _note_action_failure(now_monotonic)
+        return "neutralized-only"
+    finally:
+        _action_dispatch_guard.release()
 
 
 def score_policy_pairs_from_replay_samples(
