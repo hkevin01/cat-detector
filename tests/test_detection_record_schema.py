@@ -17,6 +17,7 @@ def _valid_payload(cd):
         "lock_profile": "high-risk",
         "reason_severity": 0.77,
         "adaptive_medium_escalated": False,
+        "posterior_risk_score": 0.63,
         "walk_score": 1.08,
         "walk_threshold": 1.03,
     }
@@ -40,6 +41,7 @@ def test_detection_record_payload_validates(cd):
         "lock_profile",
         "reason_severity",
         "adaptive_medium_escalated",
+        "posterior_risk_score",
         "walk_score",
         "walk_threshold",
     ],
@@ -82,5 +84,12 @@ def test_detection_record_invalid_action_outcome_rejected(cd):
 def test_detection_record_invalid_reason_severity_range_rejected(cd):
     payload = _valid_payload(cd)
     payload["reason_severity"] = 1.5
+    with pytest.raises(ValueError):
+        cd.validate_detection_record_payload(payload)
+
+
+def test_detection_record_invalid_posterior_risk_score_range_rejected(cd):
+    payload = _valid_payload(cd)
+    payload["posterior_risk_score"] = -0.2
     with pytest.raises(ValueError):
         cd.validate_detection_record_payload(payload)

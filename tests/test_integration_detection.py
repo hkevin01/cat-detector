@@ -23,6 +23,15 @@ _CAT_WALK_KEYS = [
     30,31,32,33,34,35,36,37,   # home row
 ]  # 26 unique keys — above medium threshold (24)
 
+_BORDERLINE_WALK_KEYS = [
+    2, 3, 4, 5,          # top-left
+    6, 7, 21, 22,        # top-center
+    8, 9, 10, 11,        # top-right
+    35, 36, 37, 38,      # home-right
+    33, 34, 47, 48,      # home-center
+    30, 31, 32, 44,      # home-left
+]  # 24 unique keys with broad spread but low far-hop transitions
+
 
 # ── PAW PRESS detection ──────────────────────────────────────────────────
 
@@ -127,9 +136,20 @@ class TestWalkDetection:
             # Send all keys with tiny gaps — inside WINDOW_SECS=2s
             for code in _CAT_WALK_KEYS:
                 h.key_down(code)
+                h.key_up(code)
                 time.sleep(0.01)
             h.flush(0.4)
-        assert len(h.detections) >= 1
+        assert any(rec.reason == "walking" for rec in h.records)
+
+    def test_single_borderline_walk_window_does_not_fire(self, cd):
+        """One borderline walk window should not fire without temporal confirmation."""
+        with EngineHarness(cd, sensitivity="medium") as h:
+            for code in _BORDERLINE_WALK_KEYS:
+                h.key_down(code)
+                h.key_up(code)
+                time.sleep(0.01)
+            h.flush(0.35)
+        assert not any(rec.reason == "walking" for rec in h.records)
 
     def test_walk_vetoed_by_backspace(self, cd):
         """Backspace anywhere in the walk window vetoes the cat trigger."""

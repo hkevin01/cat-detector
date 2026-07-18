@@ -26,6 +26,7 @@ import argparse
 import collections
 import json
 import logging
+import math
 import os
 import platform
 import queue
@@ -97,6 +98,26 @@ WALK_SCORE_MIN = {
     "high": 1.05,
     "toddler": 1.00,
 }
+
+# Temporal walk gate: borderline windows must be sustained across consecutive
+# evaluations, while very strong bursts still trigger immediately.
+WALK_CONFIRMATION_REQUIRED = 2
+WALK_STRONG_MARGIN = 0.12
+EARLY_WALK_POSTERIOR_THRESHOLD = 0.88
+
+FUSION_REASONS = ("walking", "zone hopping", "sitting/standing")
+REASON_BAYES_PRIORS = {
+    "walking": 0.12,
+    "zone hopping": 0.10,
+    "sitting/standing": 0.16,
+}
+GLOBAL_FUSION_PRIOR = 0.05
+SIGNAL_DECAY_HALF_LIFE_SECS = 4.0
+SIGNAL_DECAY_MIN_STRENGTH = 0.03
+
+CADENCE_WARMUP_EVENTS = 40
+CADENCE_MIN_STD_INTERVAL = 0.010
+CADENCE_RATE_Z_WEIGHT = 0.10
 
 BASELINE_WARMUP_SAMPLES = 80
 BASELINE_MARGIN = 0.04
@@ -308,6 +329,373 @@ def cooldown_allows(now: float, last_detection: float, cooldown_secs: float = CO
     return (now - last_detection) > cooldown_secs
 
 
+def walk_temporal_gate(
+    score: float,
+    threshold: float,
+    consecutive_hits: int,
+    *,
+    required_hits: int = WALK_CONFIRMATION_REQUIRED,
+    strong_margin: float = WALK_STRONG_MARGIN,
+) -> tuple[bool, int]:
+    """
+    Decide walk firing using temporal consistency.
+
+    Rules:
+    - score < threshold: reset confirmation state.
+    - threshold <= score < threshold + strong_margin: require repeated hits.
+    - score >= threshold + strong_margin: fire immediately.
+    """
+    if score < threshold:
+        return False, 0
+
+    if score >= (threshold + strong_margin):
+        return True, 0
+
+    next_hits = consecutive_hits + 1
+    if next_hits >= required_hits:
+        return True, 0
+    return False, next_hits
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _strength_to_likelihood_ratio(strength: float) -> float:
+    """Map [0,1] evidence strength into a smooth Bayes likelihood ratio."""
+    centered = (_clamp01(strength) - 0.5) * 4.0
+    return math.exp(centered)
+
+
+def bayesian_reason_posterior(reason: str, strength: float, priors: dict[str, float] | None = None) -> float:
+    """Calibrated posterior confidence for one reason from prior and evidence strength."""
+    priors = priors or REASON_BAYES_PRIORS
+    prior = _clamp01(priors.get(reason, 0.10))
+    prior = min(0.999, max(0.001, prior))
+    lr = _strength_to_likelihood_ratio(strength)
+    odds = (prior / (1.0 - prior)) * lr
+    return odds / (1.0 + odds)
+
+
+def fused_posterior_risk_score(
+    reason_strengths: dict[str, float],
+    *,
+    priors: dict[str, float] | None = None,
+    global_prior: float = GLOBAL_FUSION_PRIOR,
+) -> tuple[float, dict[str, float]]:
+    """
+    Fuse multiple reason posteriors into one calibrated risk probability.
+
+    The fusion assumes conditional independence in the complement space and
+    anchors to a small global prior so weak signals do not over-trigger.
+    """
+    per_reason: dict[str, float] = {}
+    for reason, strength in reason_strengths.items():
+        if reason not in FUSION_REASONS:
+            continue
+        if strength <= 0.0:
+            continue
+        per_reason[reason] = bayesian_reason_posterior(reason, strength, priors=priors)
+
+    complement_prob = 1.0
+    for posterior in per_reason.values():
+        complement_prob *= (1.0 - _clamp01(posterior))
+    fused = 1.0 - complement_prob
+
+    anchored = _clamp01(global_prior + ((1.0 - global_prior) * fused))
+    return anchored, per_reason
+
+
+@dataclass
+class TemporalSignalMemory:
+    """Decay-weighted memory of suspicious micro-signals across recent events."""
+    half_life_secs: float = SIGNAL_DECAY_HALF_LIFE_SECS
+    min_strength: float = SIGNAL_DECAY_MIN_STRENGTH
+    _events: deque = field(default_factory=lambda: deque(maxlen=512))
+
+    def _decay_weight(self, age_secs: float) -> float:
+        if age_secs <= 0.0:
+            return 1.0
+        return 0.5 ** (age_secs / max(0.001, self.half_life_secs))
+
+    def observe(self, reason: str, strength: float, now: float) -> None:
+        s = _clamp01(strength)
+        if s <= 0.0:
+            return
+        self._events.append((float(now), reason, s))
+
+    def decayed_reason_strengths(self, now: float) -> dict[str, float]:
+        accum: dict[str, float] = {}
+        for ts, reason, strength in self._events:
+            age = max(0.0, float(now) - ts)
+            weighted = strength * self._decay_weight(age)
+            if weighted < self.min_strength:
+                continue
+            accum[reason] = accum.get(reason, 0.0) + weighted
+        return {reason: min(1.0, value) for reason, value in accum.items()}
+
+
+@dataclass
+class TypingCadenceEnvelope:
+    """Online estimator of user typing cadence and variance for rate normalization."""
+    warmup_events: int = CADENCE_WARMUP_EVENTS
+    min_std_interval: float = CADENCE_MIN_STD_INTERVAL
+    _count: int = 0
+    _mean_interval: float = 0.0
+    _m2_interval: float = 0.0
+    _last_keydown: float | None = None
+
+    def observe_keydown(self, now: float) -> None:
+        if self._last_keydown is None:
+            self._last_keydown = float(now)
+            return
+        interval = max(0.001, float(now) - self._last_keydown)
+        self._last_keydown = float(now)
+        self._count += 1
+        delta = interval - self._mean_interval
+        self._mean_interval += delta / self._count
+        delta2 = interval - self._mean_interval
+        self._m2_interval += delta * delta2
+
+    def interval_std(self) -> float:
+        if self._count < 2:
+            return self.min_std_interval
+        variance = self._m2_interval / (self._count - 1)
+        return max(self.min_std_interval, math.sqrt(max(0.0, variance)))
+
+    def normalized_rate_z(self, observed_rate: float) -> float:
+        if self._count < self.warmup_events or self._mean_interval <= 0.0:
+            return 0.0
+        baseline_rate = 1.0 / self._mean_interval
+        std_rate = self.interval_std() / max(0.001, self._mean_interval ** 2)
+        std_rate = max(0.20, std_rate)
+        return (float(observed_rate) - baseline_rate) / std_rate
+
+
+def normalized_walk_rate(rate: float, cadence_z: float, z_weight: float = CADENCE_RATE_Z_WEIGHT) -> float:
+    """Boost walk rate when current cadence is an outlier versus user baseline."""
+    boost = max(0.0, cadence_z) * z_weight
+    boost = min(boost, 0.50)
+    return float(rate) * (1.0 + boost)
+
+
+def walk_micro_signal_strength(score: float, threshold: float) -> float:
+    if threshold <= 0:
+        return 0.0
+    ratio = score / threshold
+    return _clamp01((ratio - 0.75) / 0.35)
+
+
+def hold_micro_signal_strength(metrics: dict | None) -> float:
+    if not metrics:
+        return 0.0
+    max_repeats = int(metrics.get("max_repeats", 0) or 0)
+    held_keys = int(metrics.get("held_keys", 0) or 0)
+    repeat_ratio = max_repeats / max(1, HOLD_MIN_REPEATS)
+    multi_ratio = held_keys / max(1, HOLD_MULTI_KEYS)
+    return _clamp01(max(repeat_ratio, multi_ratio))
+
+
+def zone_hop_micro_signal_strength(
+    transitions: int,
+    far_hops: int,
+    unique_zones: int,
+    *,
+    toddler_mode: bool,
+) -> float:
+    min_transitions = TODDLER_ZONE_HOP_MIN_TRANSITIONS if toddler_mode else ZONE_HOP_MIN_TRANSITIONS
+    min_far_hops = TODDLER_ZONE_HOP_MIN_FAR_HOPS if toddler_mode else ZONE_HOP_MIN_FAR_HOPS
+    min_unique = TODDLER_ZONE_HOP_MIN_UNIQUE_ZONES if toddler_mode else ZONE_HOP_MIN_UNIQUE_ZONES
+    trans_ratio = transitions / max(1, min_transitions)
+    hops_ratio = far_hops / max(1, min_far_hops)
+    uniq_ratio = unique_zones / max(1, min_unique)
+    return _clamp01((trans_ratio + hops_ratio + uniq_ratio) / 3.0)
+
+
+def brier_score(probability_targets: list[tuple[float, bool]]) -> float:
+    """Return mean Brier score over (predicted_probability, observed_label)."""
+    if not probability_targets:
+        return 0.0
+    total = 0.0
+    for probability, observed in probability_targets:
+        p = _clamp01(probability)
+        y = 1.0 if observed else 0.0
+        total += (p - y) ** 2
+    return total / len(probability_targets)
+
+
+def reliability_bins(probability_targets: list[tuple[float, bool]], bins: int = 10) -> list[dict]:
+    """Compute reliability diagram buckets for calibration analysis."""
+    if bins <= 0:
+        raise ValueError("bins must be positive")
+    if not probability_targets:
+        return []
+
+    raw = [
+        {
+            "start": i / bins,
+            "end": (i + 1) / bins,
+            "count": 0,
+            "mean_predicted": 0.0,
+            "empirical": 0.0,
+        }
+        for i in range(bins)
+    ]
+    sums_pred = [0.0] * bins
+    sums_obs = [0.0] * bins
+
+    for probability, observed in probability_targets:
+        p = _clamp01(probability)
+        idx = min(bins - 1, int(p * bins))
+        raw[idx]["count"] += 1
+        sums_pred[idx] += p
+        sums_obs[idx] += 1.0 if observed else 0.0
+
+    out: list[dict] = []
+    for idx, row in enumerate(raw):
+        count = row["count"]
+        if count == 0:
+            continue
+        row["mean_predicted"] = sums_pred[idx] / count
+        row["empirical"] = sums_obs[idx] / count
+        out.append(row)
+    return out
+
+
+def severity_calibration_metrics(records: list[dict], probability_key: str = "posterior_risk_score") -> dict:
+    """Aggregate calibration metrics from replay/detection records."""
+    pairs: list[tuple[float, bool]] = []
+    for rec in records:
+        if probability_key not in rec or "expected_positive" not in rec:
+            continue
+        pairs.append((float(rec[probability_key]), bool(rec["expected_positive"])))
+    return {
+        "count": len(pairs),
+        "brier_score": brier_score(pairs),
+        "reliability_bins": reliability_bins(pairs),
+    }
+
+
+def fit_reason_priors_from_replay_samples(
+    samples: list[dict],
+    *,
+    reasons: tuple[str, ...] = FUSION_REASONS,
+    smoothing: float = 1.0,
+) -> dict[str, float]:
+    """Estimate per-reason priors from labeled replay samples with Laplace smoothing."""
+    priors: dict[str, float] = {}
+    for reason in reasons:
+        subset = [sample for sample in samples if str(sample.get("reason")) == reason]
+        positives = sum(1 for sample in subset if bool(sample.get("expected_positive", False)))
+        total = len(subset)
+        prior = (positives + smoothing) / (total + (2.0 * smoothing)) if total else REASON_BAYES_PRIORS[reason]
+        priors[reason] = _clamp01(prior)
+    return priors
+
+
+def tune_early_walk_posterior_threshold_from_replay(
+    samples: list[dict],
+    *,
+    min_threshold: float = 0.55,
+    max_threshold: float = 0.98,
+    step: float = 0.01,
+    min_precision: float = 0.95,
+    fallback: float = EARLY_WALK_POSTERIOR_THRESHOLD,
+) -> float:
+    """
+    Tune early-walk shortcut threshold using labeled walk posterior outcomes.
+
+    Objective:
+    - satisfy precision floor when possible,
+    - maximize recall among precision-safe candidates,
+    - tie-break with lower Brier error and higher threshold stability.
+    """
+    walk_samples = [
+        sample for sample in samples
+        if str(sample.get("reason")) == "walking" and sample.get("posterior_risk_score") is not None
+    ]
+    if not walk_samples:
+        return fallback
+
+    thresholds: list[float] = []
+    t = min_threshold
+    while t <= max_threshold + 1e-9:
+        thresholds.append(round(t, 4))
+        t += step
+
+    best_threshold = fallback
+    best_rank: tuple[float, float, float, float] | None = None
+    for threshold in thresholds:
+        tp = fp = fn = 0
+        pairs: list[tuple[float, bool]] = []
+        for sample in walk_samples:
+            p = _clamp01(float(sample["posterior_risk_score"]))
+            y = bool(sample["expected_positive"])
+            predicted = p >= threshold
+            pairs.append((1.0 if predicted else 0.0, y))
+            if predicted and y:
+                tp += 1
+            elif predicted and not y:
+                fp += 1
+            elif (not predicted) and y:
+                fn += 1
+
+        precision = (tp / (tp + fp)) if (tp + fp) else 1.0
+        recall = (tp / (tp + fn)) if (tp + fn) else 0.0
+        brier = brier_score(pairs)
+        precision_ok = 1.0 if precision >= min_precision else 0.0
+
+        # Sort key: precision floor first, then recall, lower Brier, then higher threshold.
+        rank = (precision_ok, recall, -brier, threshold)
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best_threshold = threshold
+
+    return _clamp01(best_threshold)
+
+
+def calibrate_fusion_from_replay_samples(samples: list[dict]) -> dict:
+    """Derive fusion priors and early-walk threshold from labeled replay statistics."""
+    priors = fit_reason_priors_from_replay_samples(samples)
+    threshold = tune_early_walk_posterior_threshold_from_replay(samples)
+    metrics = severity_calibration_metrics(samples)
+    return {
+        "reason_priors": priors,
+        "early_walk_posterior_threshold": threshold,
+        "calibration_metrics": metrics,
+        "sample_count": len(samples),
+    }
+
+
+def generate_synthetic_near_threshold_human_trace() -> list[dict]:
+    """Generate deterministic human-like trace that rides thresholds without crossing cat signals."""
+    keys = [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+    events: list[dict] = []
+    for code in keys:
+        events.append({"kind": "down", "code": code, "delay": 0.028})
+        events.append({"kind": "up", "code": code, "delay": 0.010})
+    events.extend(
+        [
+            {"kind": "down", "code": 14, "delay": 0.020},
+            {"kind": "up", "code": 14, "delay": 0.015},
+            {"kind": "down", "code": 31, "delay": 0.018},
+            {"kind": "up", "code": 31, "delay": 0.015},
+        ]
+    )
+    return events
+
+
+def generate_synthetic_adversarial_cat_trace() -> list[dict]:
+    """Generate deterministic near-threshold cat-like trace with sustained suspicious bursts."""
+    wave = [2, 3, 4, 5, 6, 7, 21, 22, 8, 9, 10, 11, 35, 36, 37, 38, 33, 34, 47, 48, 30, 31, 32, 44]
+    events: list[dict] = []
+    for _ in range(2):
+        for code in wave:
+            events.append({"kind": "down", "code": code, "delay": 0.010})
+            events.append({"kind": "up", "code": code, "delay": 0.005})
+    return events
+
+
 @dataclass(frozen=True)
 class WalkMetrics:
     unique_keys: int
@@ -327,6 +715,7 @@ class DetectionRecord:
     lock_profile: str
     reason_severity: float
     adaptive_medium_escalated: bool
+    posterior_risk_score: float
     walk_score: float | None = None
     walk_threshold: float | None = None
 
@@ -342,6 +731,7 @@ DETECTION_RECORD_REQUIRED_FIELDS = {
     "lock_profile",
     "reason_severity",
     "adaptive_medium_escalated",
+    "posterior_risk_score",
     "walk_score",
     "walk_threshold",
 }
@@ -380,6 +770,11 @@ def validate_detection_record_payload(payload: dict) -> None:
         raise ValueError("Detection record reason_severity must be in [0.0, 1.0]")
     if not isinstance(payload.get("adaptive_medium_escalated"), bool):
         raise ValueError("Detection record adaptive_medium_escalated must be a bool")
+    posterior_risk_score = payload.get("posterior_risk_score")
+    if not isinstance(posterior_risk_score, (int, float)):
+        raise ValueError("Detection record posterior_risk_score must be numeric")
+    if not (0.0 <= float(posterior_risk_score) <= 1.0):
+        raise ValueError("Detection record posterior_risk_score must be in [0.0, 1.0]")
     if not all(isinstance(k, str) for k in payload["metrics"].keys()):
         raise ValueError("Detection record metric keys must be strings")
 
@@ -932,16 +1327,20 @@ def score_policy_pairs_from_replay_samples(
       }
     """
     buckets: dict[tuple[str, str], dict[str, int]] = {}
+    calibration_samples: dict[tuple[str, str], list[tuple[float, bool]]] = {}
     for sample in samples:
         reason = str(sample["reason"])
         expected_positive = bool(sample["expected_positive"])
         adaptive_flag = bool(sample.get("adaptive_medium_escalated", False))
+        posterior_risk_score = sample.get("posterior_risk_score")
         for profile in profiles:
             key = (reason, profile)
             state = buckets.setdefault(
                 key,
                 {"tp_locks": 0, "fp_locks": 0, "positive_total": 0, "negative_total": 0, "locks": 0},
             )
+            if posterior_risk_score is not None:
+                calibration_samples.setdefault(key, []).append((float(posterior_risk_score), expected_positive))
             if expected_positive:
                 state["positive_total"] += 1
             else:
@@ -965,6 +1364,10 @@ def score_policy_pairs_from_replay_samples(
             "precision": precision,
             "disruption": disruption,
         }
+        if key in calibration_samples:
+            pairs = calibration_samples[key]
+            scored[key]["brier_score"] = brier_score(pairs)
+            scored[key]["reliability_bins"] = reliability_bins(pairs)
     return scored
 
 
@@ -989,6 +1392,19 @@ def hold_detection_signal(key_hold_times: dict, code: int, now: float, last_dete
     if code in HUMAN_HOLD_KEYS:
         return None
     key_hold_times[code].append(now)
+    metrics = hold_window_metrics(key_hold_times, now)
+    active_held = metrics["held_keys"]
+    max_repeats = metrics["max_repeats"]
+    if (
+        (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
+        and cooldown_allows(now, last_detection)
+    ):
+        return metrics
+    return None
+
+
+def hold_window_metrics(key_hold_times: dict, now: float) -> dict:
+    """Prune hold buffers and compute repeat intensity metrics."""
     hold_cutoff = now - HOLD_WINDOW_SECS
     active_held = 0
     max_repeats = 0
@@ -1000,12 +1416,7 @@ def hold_detection_signal(key_hold_times: dict, code: int, now: float, last_dete
             active_held += 1
         if n > max_repeats:
             max_repeats = n
-    if (
-        (active_held >= HOLD_MULTI_KEYS or max_repeats >= HOLD_MIN_REPEATS)
-        and cooldown_allows(now, last_detection)
-    ):
-        return {"held_keys": active_held, "max_repeats": max_repeats}
-    return None
+    return {"held_keys": active_held, "max_repeats": max_repeats}
 
 
 def paw_detection_signal(
@@ -1045,6 +1456,11 @@ def zone_hop_detection_signal(
     while zone_event_times and zone_event_times[0][0] < now - ZONE_HOP_WINDOW_SECS:
         zone_event_times.popleft()
 
+    stats = zone_hop_window_stats(zone_event_times)
+    transitions = stats["transitions"]
+    far_hops = stats["far_hops"]
+    unique_zones = stats["unique_zones"]
+
     min_events = TODDLER_ZONE_HOP_MIN_EVENTS if toddler_mode else ZONE_HOP_MIN_EVENTS
     min_transitions = (
         TODDLER_ZONE_HOP_MIN_TRANSITIONS if toddler_mode else ZONE_HOP_MIN_TRANSITIONS
@@ -1057,6 +1473,23 @@ def zone_hop_detection_signal(
     if len(zone_event_times) < min_events or not cooldown_allows(now, last_detection):
         return None
 
+    if (
+        transitions >= min_transitions
+        and far_hops >= min_far_hops
+        and unique_zones >= min_unique_zones
+    ):
+        return {
+            "events": len(zone_event_times),
+            "transitions": transitions,
+            "far_hops": far_hops,
+            "unique_zones": unique_zones,
+            "window": f"{ZONE_HOP_WINDOW_SECS:.1f}s",
+        }
+    return None
+
+
+def zone_hop_window_stats(zone_event_times: deque) -> dict:
+    """Compute transitions/far hops/unique zones from current zone event window."""
     compressed: list[str] = []
     for _, zone in zone_event_times:
         if not compressed or compressed[-1] != zone:
@@ -1076,21 +1509,12 @@ def zone_hop_detection_signal(
         if manhattan >= 2:
             far_hops += 1
 
-    unique_zones = len(set(compressed))
-
-    if (
-        transitions >= min_transitions
-        and far_hops >= min_far_hops
-        and unique_zones >= min_unique_zones
-    ):
-        return {
-            "events": len(zone_event_times),
-            "transitions": transitions,
-            "far_hops": far_hops,
-            "unique_zones": unique_zones,
-            "window": f"{ZONE_HOP_WINDOW_SECS:.1f}s",
-        }
-    return None
+    return {
+        "events": len(zone_event_times),
+        "transitions": transitions,
+        "far_hops": far_hops,
+        "unique_zones": len(set(compressed)),
+    }
 
 
 # ── Platform-agnostic notification ────────────────────────────────────────────
@@ -1190,23 +1614,51 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
     walk_score_min = WALK_SCORE_MIN["toddler"] if args.toddler else WALK_SCORE_MIN[args.sensitivity]
     baseline = AdaptiveBaselineCalibrator(static_min=walk_score_min)
     risk_window = AdaptiveRiskWindowCalibrator()
+    cadence = TypingCadenceEnvelope()
+    signal_memory = TemporalSignalMemory()
+    fusion_priors = dict(REASON_BAYES_PRIORS)
+    early_walk_threshold = EARLY_WALK_POSTERIOR_THRESHOLD
+
+    calibration = getattr(args, "fusion_calibration", None)
+    if isinstance(calibration, dict):
+        candidate_priors = calibration.get("reason_priors")
+        if isinstance(candidate_priors, dict):
+            for reason in FUSION_REASONS:
+                if reason in candidate_priors:
+                    fusion_priors[reason] = _clamp01(candidate_priors[reason])
+        candidate_threshold = calibration.get("early_walk_posterior_threshold")
+        if candidate_threshold is not None:
+            early_walk_threshold = _clamp01(float(candidate_threshold))
 
     key_times:           dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     key_hold_times:      dict[int, deque] = collections.defaultdict(lambda: deque(maxlen=200))
     zone_event_times:    deque            = deque(maxlen=120)
     keys_currently_held: set[int]         = set()
+    walk_consecutive_hits = 0
     last_detection = 0.0
     last_input_event_utc: str | None = None
 
-    def _fire(reason: str, walk_score: float | None = None, walk_threshold: float | None = None, **log_kw):
+    def _fire(
+        reason: str,
+        walk_score: float | None = None,
+        walk_threshold: float | None = None,
+        posterior_risk_score: float | None = None,
+        **log_kw,
+    ):
         nonlocal last_detection
+        nonlocal walk_consecutive_hits
         now_mono = time.monotonic()
         last_detection = now_mono
+        if posterior_risk_score is None:
+            reason_strengths = signal_memory.decayed_reason_strengths(now_mono)
+            posterior_risk_score, _ = fused_posterior_risk_score(reason_strengths, priors=fusion_priors)
+        posterior_risk_score = _clamp01(posterior_risk_score)
         msg = random.choice(messages)
         log.warning("%s DETECTED (%s)! %s",
                     entity.upper(), reason,
                     " ".join(f"{k}={v}" for k, v in log_kw.items()))
-        severity = reason_severity_weight(reason, log_kw)
+        severity_raw = reason_severity_weight(reason, log_kw)
+        severity = _clamp01((0.65 * severity_raw) + (0.35 * posterior_risk_score))
         adaptive_medium_escalated = risk_window.observe_and_should_escalate(
             reason,
             now_mono,
@@ -1229,6 +1681,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
             lock_profile=lock_profile(args),
             reason_severity=severity,
             adaptive_medium_escalated=adaptive_medium_escalated,
+            posterior_risk_score=posterior_risk_score,
             walk_score=walk_score,
             walk_threshold=walk_threshold,
         )
@@ -1245,6 +1698,7 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         key_hold_times.clear()
         zone_event_times.clear()
         keys_currently_held.clear()
+        walk_consecutive_hits = 0
 
     log.info(
         "%s detector running | sensitivity=%s%s "
@@ -1283,20 +1737,57 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
         # ── Hold / sit (autorepeat flood) ────────────────────────────────────
         if kind == "hold":
             hold_metrics = hold_detection_signal(key_hold_times, code, now, last_detection)
+            if code not in HUMAN_HOLD_KEYS:
+                micro_hold_metrics = hold_metrics or hold_window_metrics(key_hold_times, now)
+                signal_memory.observe(
+                    "sitting/standing",
+                    hold_micro_signal_strength(micro_hold_metrics),
+                    now,
+                )
             if hold_metrics is not None:
-                _fire("sitting/standing", **hold_metrics)
+                reason_strengths = signal_memory.decayed_reason_strengths(now)
+                posterior_risk_score, per_reason = fused_posterior_risk_score(
+                    reason_strengths,
+                    priors=fusion_priors,
+                )
+                _fire(
+                    "sitting/standing",
+                    posterior_risk_score=posterior_risk_score,
+                    per_reason_posteriors={k: round(v, 3) for k, v in per_reason.items()},
+                    **hold_metrics,
+                )
             continue
 
         # key_down from here ──────────────────────────────────────────────────
         keys_currently_held.add(code)
         if code not in HUMAN_HOLD_KEYS and code not in MODIFIER_KEYS:
+            cadence.observe_keydown(now)
             zone = KEY_PRIMARY_ZONE.get(code)
             if zone is not None:
                 zone_event_times.append((now, zone))
 
+        zone_stats = zone_hop_window_stats(zone_event_times)
+        zone_strength = zone_hop_micro_signal_strength(
+            zone_stats["transitions"],
+            zone_stats["far_hops"],
+            zone_stats["unique_zones"],
+            toddler_mode=bool(args.toddler),
+        )
+        signal_memory.observe("zone hopping", zone_strength, now)
+
         hop_metrics = zone_hop_detection_signal(zone_event_times, now, last_detection, args.toddler)
         if hop_metrics is not None:
-            _fire("zone hopping", **hop_metrics)
+            reason_strengths = signal_memory.decayed_reason_strengths(now)
+            posterior_risk_score, per_reason = fused_posterior_risk_score(
+                reason_strengths,
+                priors=fusion_priors,
+            )
+            _fire(
+                "zone hopping",
+                posterior_risk_score=posterior_risk_score,
+                per_reason_posteriors={k: round(v, 3) for k, v in per_reason.items()},
+                **hop_metrics,
+            )
             continue
 
         # ── Paw-press / toddler-slam detection ───────────────────────────────
@@ -1320,8 +1811,18 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
 
         # ── Walk / burst detection ────────────────────────────────────────────
         active_keys, metrics = compute_walk_metrics(key_times, now)
-        score = walk_confidence(metrics.unique_keys, metrics.rate, metrics.spread, thresh)
+        cadence_z = cadence.normalized_rate_z(metrics.rate)
+        adjusted_rate = normalized_walk_rate(metrics.rate, cadence_z)
+        score = walk_confidence(metrics.unique_keys, adjusted_rate, metrics.spread, thresh)
         adaptive_min = baseline.threshold()
+        threshold = max(walk_score_min, adaptive_min)
+
+        signal_memory.observe("walking", walk_micro_signal_strength(score, threshold), now)
+        reason_strengths = signal_memory.decayed_reason_strengths(now)
+        posterior_risk_score, per_reason = fused_posterior_risk_score(
+            reason_strengths,
+            priors=fusion_priors,
+        )
 
         if (
             metrics.unique_keys >= thresh["min_keys"]
@@ -1330,18 +1831,35 @@ def _detection_engine(event_queue: queue.SimpleQueue, args) -> None:
             and not (active_keys & HUMAN_HOLD_KEYS)
             and cooldown_allows(now, last_detection)
         ):
-            threshold = max(walk_score_min, adaptive_min)
-            if score < threshold:
+            required_hits = (
+                1
+                if posterior_risk_score >= early_walk_threshold
+                else WALK_CONFIRMATION_REQUIRED
+            )
+            should_fire, walk_consecutive_hits = walk_temporal_gate(
+                score,
+                threshold,
+                walk_consecutive_hits,
+                required_hits=required_hits,
+            )
+            if not should_fire:
                 continue
             _fire("walking",
+                  posterior_risk_score=posterior_risk_score,
                   walk_score=score,
                   walk_threshold=threshold,
                   keys=metrics.unique_keys,
                   rate=f"{metrics.rate:.1f}/s",
+                  normalized_rate=f"{adjusted_rate:.1f}/s",
+                  cadence_z=f"{cadence_z:.2f}",
                   spread=f"{metrics.spread*100:.0f}%",
                   score=f"{score:.2f}",
-                  threshold=f"{threshold:.2f}")
+                  threshold=f"{threshold:.2f}",
+                  required_hits=required_hits,
+                  per_reason_posteriors={k: round(v, 3) for k, v in per_reason.items()})
             continue
+
+        walk_consecutive_hits = 0
 
         # Calibrate against likely-human windows conservatively.
         if not (active_keys & HUMAN_HOLD_KEYS) and score < walk_score_min:

@@ -73,13 +73,15 @@ def cd():
 
 class _FakeArgs:
     def __init__(self, sensitivity="medium", toddler=False,
-                 lock=False, sound=False, pause_secs=0, lock_profile=None):
+                 lock=False, sound=False, pause_secs=0, lock_profile=None, **extra):
         self.sensitivity = sensitivity
         self.toddler     = toddler
         self.lock        = lock
         self.sound       = sound
         self.pause_secs  = pause_secs
         self.lock_profile = lock_profile
+        for key, value in extra.items():
+            setattr(self, key, value)
 
 
 class EngineHarness:

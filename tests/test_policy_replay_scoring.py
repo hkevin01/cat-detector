@@ -20,6 +20,7 @@ def test_detection_records_capture_action_outcome_fields(cd, trace_loader):
             cd.LOCK_PROFILE_ADAPTIVE,
         }
         assert 0.0 <= rec.reason_severity <= 1.0
+        assert 0.0 <= rec.posterior_risk_score <= 1.0
         assert isinstance(rec.adaptive_medium_escalated, bool)
 
 
@@ -42,6 +43,7 @@ def test_replay_policy_scoring_uses_stored_traces(cd, trace_loader):
                 "reason": rec.reason,
                 "expected_positive": True,
                 "adaptive_medium_escalated": rec.adaptive_medium_escalated,
+                "posterior_risk_score": rec.posterior_risk_score,
             }
         )
     for rec in h_human.records:
@@ -50,6 +52,7 @@ def test_replay_policy_scoring_uses_stored_traces(cd, trace_loader):
                 "reason": rec.reason,
                 "expected_positive": False,
                 "adaptive_medium_escalated": rec.adaptive_medium_escalated,
+                "posterior_risk_score": rec.posterior_risk_score,
             }
         )
 
@@ -62,4 +65,6 @@ def test_replay_policy_scoring_uses_stored_traces(cd, trace_loader):
         metric = scored[key]
         assert "precision" in metric
         assert "disruption" in metric
+        assert "brier_score" in metric
+        assert "reliability_bins" in metric
         assert metric["locks"] >= 0

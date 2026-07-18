@@ -37,6 +37,7 @@ def test_record_detection_event_writes_jsonl(cd, tmp_path):
         lock_profile="high-risk",
         reason_severity=0.71,
         adaptive_medium_escalated=False,
+        posterior_risk_score=0.66,
         walk_score=1.08,
         walk_threshold=1.03,
     )
@@ -56,6 +57,7 @@ def test_record_detection_event_writes_jsonl(cd, tmp_path):
     payload = json.loads(out_file.read_text(encoding="utf-8").strip())
     assert payload["reason"] == "walking"
     assert payload["walk_score"] == 1.08
+    assert payload["posterior_risk_score"] == 0.66
 
 
 def test_write_runtime_heartbeat_writes_json(cd, tmp_path):
@@ -441,9 +443,23 @@ def test_adaptive_profile_locks_medium_only_when_escalated(cd):
 
 def test_score_policy_pairs_from_replay_samples(cd):
     samples = [
-        {"reason": "walking", "expected_positive": True, "adaptive_medium_escalated": True},
-        {"reason": "walking", "expected_positive": False, "adaptive_medium_escalated": True},
-        {"reason": "sitting/standing", "expected_positive": True},
+        {
+            "reason": "walking",
+            "expected_positive": True,
+            "adaptive_medium_escalated": True,
+            "posterior_risk_score": 0.81,
+        },
+        {
+            "reason": "walking",
+            "expected_positive": False,
+            "adaptive_medium_escalated": True,
+            "posterior_risk_score": 0.67,
+        },
+        {
+            "reason": "sitting/standing",
+            "expected_positive": True,
+            "posterior_risk_score": 0.92,
+        },
     ]
     metrics = cd.score_policy_pairs_from_replay_samples(samples)
 
@@ -455,6 +471,8 @@ def test_score_policy_pairs_from_replay_samples(cd):
     assert walking_adaptive["locks"] == 2
     assert walking_adaptive["precision"] == 0.5
     assert walking_adaptive["disruption"] == 1.0
+    assert "brier_score" in walking_adaptive
+    assert "reliability_bins" in walking_adaptive
 
     sit_high_risk = metrics[("sitting/standing", "high-risk")]
     assert sit_high_risk["locks"] == 1

@@ -46,3 +46,31 @@ def test_walk_confidence_respects_weighting(cd):
         thresh=thresh,
     )
     assert score > 1.0
+
+
+def test_walk_temporal_gate_requires_confirmation_for_borderline_scores(cd):
+    threshold = 1.03
+
+    should_fire, hits = cd.walk_temporal_gate(1.06, threshold, consecutive_hits=0)
+    assert should_fire is False
+    assert hits == 1
+
+    should_fire, hits = cd.walk_temporal_gate(1.07, threshold, consecutive_hits=hits)
+    assert should_fire is True
+    assert hits == 0
+
+
+def test_walk_temporal_gate_fires_immediately_for_strong_scores(cd):
+    threshold = 1.03
+    strong_score = threshold + cd.WALK_STRONG_MARGIN + 0.01
+
+    should_fire, hits = cd.walk_temporal_gate(strong_score, threshold, consecutive_hits=0)
+    assert should_fire is True
+    assert hits == 0
+
+
+def test_walk_temporal_gate_resets_on_subthreshold(cd):
+    threshold = 1.05
+    should_fire, hits = cd.walk_temporal_gate(1.01, threshold, consecutive_hits=1)
+    assert should_fire is False
+    assert hits == 0
