@@ -4,7 +4,10 @@ Concurrency stress tests for lock safety circuit behavior.
 
 import threading
 import time
+import random
 from types import SimpleNamespace
+
+from tests.conftest import EngineHarness
 
 
 def test_lock_circuit_allows_only_one_lock_in_same_window(cd):
@@ -224,3 +227,115 @@ def test_startup_grace_blocks_initial_locks(cd):
         cd.should_lock_for_reason = old_should_lock
 
     assert called["lock"] == 1
+
+
+def test_adaptive_timeout_tunes_from_latency_histogram(cd):
+    cd.reset_action_safety_state(now=0.0)
+    base = cd.ACTION_NOTIFY_TIMEOUT_SECS
+    for _ in range(cd.ACTION_TIMEOUT_WARMUP_SAMPLES + 2):
+        cd._record_action_latency_sample("notify", 0.60)
+
+    tuned = cd.adaptive_timeout_for_action("notify", base)
+    assert tuned > base
+
+
+def test_fallback_mode_forces_neutralized_only(cd):
+    args = SimpleNamespace(sound=False, lock=False)
+    calls = {"notify": 0}
+    old_notify = cd.notify
+    old_neutralize = cd.neutralize_active_input
+    try:
+        def _failing_notify(*_a, **_kw):
+            calls["notify"] += 1
+            raise RuntimeError("notify failure")
+
+        cd.notify = _failing_notify
+        cd.neutralize_active_input = lambda *_a, **_kw: None
+
+        base = 4000.0
+        for i in range(cd.ACTION_FALLBACK_TRIGGER_FAILURES + 1):
+            cd.dispatch_detection_actions(
+                args,
+                "cat",
+                "walking",
+                now_monotonic=base + (i * (cd.ACTION_MIN_INTERVAL_SECS + 0.2)),
+            )
+    finally:
+        cd.notify = old_notify
+        cd.neutralize_active_input = old_neutralize
+
+    # Once fallback is active, the final dispatch is forced neutralized-only
+    # before side effects, so notify is not called.
+    assert calls["notify"] == cd.ACTION_FALLBACK_TRIGGER_FAILURES
+    snap = cd.action_safety_snapshot(now=base + 5.0)
+    assert snap["fallback_mode"] is True
+
+
+def test_randomized_dispatch_stress_has_no_deadlock_or_livelock(cd):
+    args = SimpleNamespace(sound=True, lock=True, lock_profile="all")
+    old_notify = cd.notify
+    old_neutralize = cd.neutralize_active_input
+    old_sound = cd.play_meow
+    old_lock = cd.lock_screen
+    old_should_lock = cd.should_lock_for_reason
+    old_lock_circuit = cd.lock_circuit_allows
+    outcomes = []
+    out_guard = threading.Lock()
+
+    try:
+        cd.notify = lambda *_a, **_kw: None
+        cd.neutralize_active_input = lambda *_a, **_kw: None
+        cd.play_meow = lambda *_a, **_kw: None
+        cd.lock_screen = lambda *_a, **_kw: None
+        cd.should_lock_for_reason = lambda *_a, **_kw: True
+        cd.lock_circuit_allows = lambda *_a, **_kw: True
+
+        def worker(worker_idx: int):
+            rnd = random.Random(1337 + worker_idx)
+            now = 10000.0 + (worker_idx * 100.0)
+            for _ in range(120):
+                now += rnd.uniform(cd.ACTION_MIN_INTERVAL_SECS + 0.01, cd.ACTION_MIN_INTERVAL_SECS + 0.8)
+                outcome = cd.dispatch_detection_actions(
+                    args,
+                    "cat",
+                    "walking",
+                    now_monotonic=now,
+                )
+                with out_guard:
+                    outcomes.append(outcome)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+    finally:
+        cd.notify = old_notify
+        cd.neutralize_active_input = old_neutralize
+        cd.play_meow = old_sound
+        cd.lock_screen = old_lock
+        cd.should_lock_for_reason = old_should_lock
+        cd.lock_circuit_allows = old_lock_circuit
+
+    assert all(not t.is_alive() for t in threads)
+    assert len(outcomes) == 12 * 120
+    assert all(outcome in {"locked", "neutralized-only"} for outcome in outcomes)
+
+
+def test_randomized_engine_event_bursts_remain_live(cd):
+    rnd = random.Random(20260718)
+    with EngineHarness(cd, sensitivity="medium", lock=False, lock_profile="adaptive") as h:
+        for _ in range(80):
+            burst_size = rnd.randint(3, 12)
+            for _ in range(burst_size):
+                code = rnd.randint(2, 55)
+                h.key_down(code)
+                if rnd.random() < 0.75:
+                    h.key_up(code)
+                if rnd.random() < 0.15:
+                    h.key_hold(code)
+            h.flush(0.005)
+        h.flush(0.3)
+
+    # The stress test is about liveness and no hard stalls; detections are optional.
+    assert isinstance(h.records, list)

@@ -88,6 +88,8 @@ def test_write_runtime_heartbeat_writes_json(cd, tmp_path):
     assert payload["last_successful_input_event_utc"] is None
     assert payload["lock_profile"] == "adaptive"
     assert payload["lock_enabled"] is True
+    assert "action_safety" in payload
+    assert "adaptive_timeouts_secs" in payload["action_safety"]
 
 
 def test_read_runtime_status_snapshot_derives_freshness(cd, tmp_path):
@@ -180,6 +182,7 @@ def test_migrate_heartbeat_payload_adds_missing_fields(cd):
     assert migrated["heartbeat_version"] == cd.HEARTBEAT_SCHEMA_VERSION
     assert "last_successful_input_event_utc" in migrated
     assert "last_detection_reason" in migrated
+    assert "action_safety" in migrated
 
 
 def test_migrate_heartbeat_file_rewrites_older_payload(cd, tmp_path):
@@ -257,6 +260,8 @@ def test_write_runtime_status_page_renders_human_readable_html(cd, tmp_path):
     assert "Heartbeat freshness" in html
     assert "Heartbeat schema version" in html
     assert "Last successful input event" in html
+    assert "Action safety" in html
+    assert "Adaptive timeouts" in html
 
 
 def test_open_raw_heartbeat_uses_default_opener(cd, tmp_path):

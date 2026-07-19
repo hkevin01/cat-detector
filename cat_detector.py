@@ -150,6 +150,18 @@ ACTION_LOCK_TIMEOUT_SECS = 1.50
 ACTION_FAILURE_MAX_CONSECUTIVE = 3
 ACTION_LOCK_DISABLE_WINDOW_SECS = 900.0
 ACTION_LOCK_STARTUP_GRACE_SECS = 8.0
+ACTION_TIMEOUT_BUCKETS_SECS = (0.02, 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.0, 1.5, 2.5, 4.0)
+ACTION_TIMEOUT_WARMUP_SAMPLES = 6
+ACTION_TIMEOUT_QUANTILE = 0.95
+ACTION_TIMEOUT_SCALE = 2.0
+ACTION_TIMEOUT_MIN_MULTIPLIER = 0.85
+ACTION_TIMEOUT_MAX_MULTIPLIER = 3.0
+ACTION_TIMEOUT_WINDOWS_MULTIPLIER = 1.20
+ACTION_TIMEOUT_LINUX_MULTIPLIER = 1.0
+ACTION_TIMEOUT_WINDOWS_MULTIPLIER = 1.35
+ACTION_TIMEOUT_OTHER_MULTIPLIER = 1.15
+ACTION_FALLBACK_TRIGGER_FAILURES = 4
+ACTION_FALLBACK_WINDOW_SECS = 300.0
 HEARTBEAT_INTERVAL_SECS = 30.0
 HEARTBEAT_SCHEMA_VERSION = 1
 
@@ -290,8 +302,11 @@ _action_dispatch_guard = threading.Lock()
 _action_safety_state = {
     "last_dispatch": 0.0,
     "consecutive_failures": 0,
+    "instability_failures": 0,
     "lock_disabled_until": 0.0,
+    "fallback_until": 0.0,
     "process_started": time.monotonic(),
+    "latency_histograms": {},
 }
 _action_safety_guard = threading.Lock()
 _heartbeat_state = {
@@ -1016,6 +1031,7 @@ def migrate_heartbeat_payload(payload: dict) -> dict:
     migrated.setdefault("heartbeat_version", HEARTBEAT_SCHEMA_VERSION)
     migrated.setdefault("last_successful_input_event_utc", None)
     migrated.setdefault("last_detection_reason", None)
+    migrated.setdefault("action_safety", {})
     return migrated
 
 
@@ -1065,6 +1081,12 @@ def write_runtime_status_page() -> None:
             input_age = status.get("input_freshness_seconds")
             input_age_text = "unknown" if input_age is None else f"{int(input_age)} seconds"
             schema_text = "current" if status.get("schema_current") else "stale"
+            action_safety = status.get("action_safety") or {}
+            lock_suppressed = bool(action_safety.get("lock_suppressed", False))
+            fallback_mode = bool(action_safety.get("fallback_mode", False))
+            lock_remaining = int(action_safety.get("lock_disabled_remaining_secs", 0.0) or 0)
+            fallback_remaining = int(action_safety.get("fallback_remaining_secs", 0.0) or 0)
+            tuned = action_safety.get("adaptive_timeouts_secs") or {}
             body = f"""
 <p><strong>Heartbeat freshness:</strong> <span id=\"freshness-label\">{status['freshness_label']}</span></p>
 <p><strong>Last heartbeat:</strong> <span id=\"heartbeat-ts\">{status['timestamp_utc']}</span></p>
@@ -1074,6 +1096,8 @@ def write_runtime_status_page() -> None:
 <p><strong>Input stream health:</strong> {status.get('input_freshness_label')} ({input_age_text})</p>
 <p><strong>Mode:</strong> sensitivity={status.get('sensitivity')} toddler={status.get('toddler_mode')}</p>
 <p><strong>Lock policy:</strong> profile={status.get('lock_profile')} enabled={status.get('lock_enabled')}</p>
+<p><strong>Action safety:</strong> lock_suppressed={lock_suppressed} ({lock_remaining}s), fallback_mode={fallback_mode} ({fallback_remaining}s), failures={action_safety.get('consecutive_failures', 0)} instability={action_safety.get('instability_failures', 0)}</p>
+<p><strong>Adaptive timeouts:</strong> notify={tuned.get('notify', ACTION_NOTIFY_TIMEOUT_SECS):.2f}s neutralize={tuned.get('neutralize', ACTION_NEUTRALIZE_TIMEOUT_SECS):.2f}s sound={tuned.get('sound', ACTION_SOUND_TIMEOUT_SECS):.2f}s lock={tuned.get('lock', ACTION_LOCK_TIMEOUT_SECS):.2f}s</p>
 <p><strong>PID:</strong> {status.get('pid')}</p>
 <p><strong>Freshness age:</strong> <span id=\"freshness-age\">{int(status['freshness_seconds'])}</span> seconds</p>
 """
@@ -1175,6 +1199,7 @@ def write_runtime_heartbeat(
             "lock_enabled": bool(getattr(args, "lock", False)),
             "last_detection_reason": last_detection_reason,
             "last_successful_input_event_utc": last_successful_input_event_utc,
+            "action_safety": action_safety_snapshot(now_monotonic),
         }
         path = _heartbeat_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1299,13 +1324,126 @@ def reset_action_safety_state(now: float | None = None) -> None:
     with _action_safety_guard:
         _action_safety_state["last_dispatch"] = 0.0
         _action_safety_state["consecutive_failures"] = 0
+        _action_safety_state["instability_failures"] = 0
         _action_safety_state["lock_disabled_until"] = 0.0
+        _action_safety_state["fallback_until"] = 0.0
         _action_safety_state["process_started"] = float(now)
+        _action_safety_state["latency_histograms"] = {}
 
 
-def _run_with_timeout(fn, timeout_secs: float, label: str) -> bool:
+def _base_timeout_for_action(label: str) -> float:
+    if label == "notify":
+        return ACTION_NOTIFY_TIMEOUT_SECS
+    if label == "neutralize":
+        return ACTION_NEUTRALIZE_TIMEOUT_SECS
+    if label == "sound":
+        return ACTION_SOUND_TIMEOUT_SECS
+    if label == "lock":
+        return ACTION_LOCK_TIMEOUT_SECS
+    return ACTION_NOTIFY_TIMEOUT_SECS
+
+
+def _platform_timeout_multiplier() -> float:
+    if _PLATFORM == "Windows":
+        return ACTION_TIMEOUT_WINDOWS_MULTIPLIER
+    if _PLATFORM == "Linux":
+        return ACTION_TIMEOUT_LINUX_MULTIPLIER
+    return ACTION_TIMEOUT_OTHER_MULTIPLIER
+
+
+def _empty_latency_histogram() -> dict:
+    return {
+        "counts": [0] * (len(ACTION_TIMEOUT_BUCKETS_SECS) + 1),
+        "samples": 0,
+    }
+
+
+def _record_action_latency_sample(label: str, elapsed_secs: float) -> None:
+    elapsed = max(0.0, float(elapsed_secs))
+    with _action_safety_guard:
+        histograms = _action_safety_state["latency_histograms"]
+        hist = histograms.setdefault(label, _empty_latency_histogram())
+        idx = len(ACTION_TIMEOUT_BUCKETS_SECS)
+        for i, edge in enumerate(ACTION_TIMEOUT_BUCKETS_SECS):
+            if elapsed <= edge:
+                idx = i
+                break
+        hist["counts"][idx] += 1
+        hist["samples"] += 1
+
+
+def _histogram_quantile_upper_bound(hist: dict, quantile: float = ACTION_TIMEOUT_QUANTILE) -> float:
+    samples = int(hist.get("samples", 0))
+    if samples <= 0:
+        return 0.0
+    target = max(1, int(math.ceil(samples * max(0.0, min(1.0, quantile)))))
+    running = 0
+    for i, count in enumerate(hist.get("counts", [])):
+        running += int(count)
+        if running >= target:
+            if i < len(ACTION_TIMEOUT_BUCKETS_SECS):
+                return float(ACTION_TIMEOUT_BUCKETS_SECS[i])
+            return float(ACTION_TIMEOUT_BUCKETS_SECS[-1]) * ACTION_TIMEOUT_WINDOWS_MULTIPLIER
+    return float(ACTION_TIMEOUT_BUCKETS_SECS[-1]) * ACTION_TIMEOUT_WINDOWS_MULTIPLIER
+
+
+def adaptive_timeout_for_action(label: str, base_timeout_secs: float | None = None) -> float:
+    """Return adaptive timeout for a side-effect action from recent latency histograms."""
+    base = float(_base_timeout_for_action(label) if base_timeout_secs is None else base_timeout_secs)
+    with _action_safety_guard:
+        hist = _action_safety_state["latency_histograms"].get(label)
+        if not hist or int(hist.get("samples", 0)) < ACTION_TIMEOUT_WARMUP_SAMPLES:
+            tuned = base
+        else:
+            p95 = _histogram_quantile_upper_bound(hist)
+            tuned = max(base * ACTION_TIMEOUT_MIN_MULTIPLIER, p95 * ACTION_TIMEOUT_SCALE)
+
+    tuned *= _platform_timeout_multiplier()
+    min_timeout = base * ACTION_TIMEOUT_MIN_MULTIPLIER
+    max_timeout = base * ACTION_TIMEOUT_MAX_MULTIPLIER
+    return max(0.05, min(max_timeout, max(min_timeout, tuned)))
+
+
+def _fallback_mode_active(now: float) -> bool:
+    with _action_safety_guard:
+        return float(_action_safety_state["fallback_until"]) > now
+
+
+def action_safety_snapshot(now: float | None = None) -> dict:
+    """Expose action safety/circuit-breaker internals for support diagnostics."""
+    if now is None:
+        now = time.monotonic()
+    with _action_safety_guard:
+        lock_disabled_until = float(_action_safety_state["lock_disabled_until"])
+        fallback_until = float(_action_safety_state["fallback_until"])
+        histograms = _action_safety_state.get("latency_histograms", {})
+        consecutive_failures = int(_action_safety_state["consecutive_failures"])
+        instability_failures = int(_action_safety_state["instability_failures"])
+        histogram_counts = {
+            label: list(data.get("counts", []))
+            for label, data in histograms.items()
+        }
+    tuned = {
+        label: adaptive_timeout_for_action(label, _base_timeout_for_action(label))
+        for label in ("notify", "neutralize", "sound", "lock")
+    }
+    return {
+        "consecutive_failures": consecutive_failures,
+        "instability_failures": instability_failures,
+        "lock_disabled_remaining_secs": max(0.0, lock_disabled_until - now),
+        "fallback_remaining_secs": max(0.0, fallback_until - now),
+        "lock_suppressed": lock_disabled_until > now,
+        "fallback_mode": fallback_until > now,
+        "adaptive_timeouts_secs": tuned,
+        "latency_histograms": histogram_counts,
+    }
+
+
+def _run_with_timeout(fn, label: str, base_timeout_secs: float) -> bool:
     """Run a side-effect function with a hard timeout to avoid hangs."""
     outcome = {"ok": True}
+    timeout = adaptive_timeout_for_action(label, base_timeout_secs)
+    started = time.monotonic()
 
     def _target() -> None:
         try:
@@ -1316,10 +1454,13 @@ def _run_with_timeout(fn, timeout_secs: float, label: str) -> bool:
 
     thread = threading.Thread(target=_target, daemon=True)
     thread.start()
-    thread.join(timeout=max(0.05, float(timeout_secs)))
+    thread.join(timeout=max(0.05, timeout))
+    elapsed = max(0.0, time.monotonic() - started)
     if thread.is_alive():
-        log.warning("Action side-effect timed out (%s)", label)
+        _record_action_latency_sample(label, timeout)
+        log.warning("Action side-effect timed out (%s) timeout=%.2fs", label, timeout)
         return False
+    _record_action_latency_sample(label, elapsed)
     return bool(outcome["ok"])
 
 
@@ -1327,10 +1468,17 @@ def _note_action_failure(now: float) -> None:
     with _action_safety_guard:
         failures = int(_action_safety_state["consecutive_failures"]) + 1
         _action_safety_state["consecutive_failures"] = failures
+        instability = int(_action_safety_state["instability_failures"]) + 1
+        _action_safety_state["instability_failures"] = instability
         if failures >= ACTION_FAILURE_MAX_CONSECUTIVE:
             _action_safety_state["lock_disabled_until"] = max(
                 float(_action_safety_state["lock_disabled_until"]),
                 now + ACTION_LOCK_DISABLE_WINDOW_SECS,
+            )
+        if instability >= ACTION_FALLBACK_TRIGGER_FAILURES:
+            _action_safety_state["fallback_until"] = max(
+                float(_action_safety_state["fallback_until"]),
+                now + ACTION_FALLBACK_WINDOW_SECS,
             )
 
 
@@ -1338,6 +1486,8 @@ def _note_action_success() -> None:
     with _action_safety_guard:
         if _action_safety_state["consecutive_failures"] > 0:
             _action_safety_state["consecutive_failures"] = int(_action_safety_state["consecutive_failures"]) - 1
+        if _action_safety_state["instability_failures"] > 0:
+            _action_safety_state["instability_failures"] = int(_action_safety_state["instability_failures"]) - 1
 
 
 def _dispatch_throttle_allows(now: float) -> bool:
@@ -1394,30 +1544,34 @@ def dispatch_detection_actions(
             log.warning("Detection action skipped: throttle active")
             return "neutralized-only"
 
+        if _fallback_mode_active(now_monotonic):
+            log.warning("Detection action forced to neutralized-only: fallback mode active")
+            return "neutralized-only"
+
         ok_notify = _run_with_timeout(
             lambda: notify(message),
-            ACTION_NOTIFY_TIMEOUT_SECS,
             "notify",
+            ACTION_NOTIFY_TIMEOUT_SECS,
         )
         if not ok_notify:
             _note_action_failure(now_monotonic)
 
         ok_neutralize = _run_with_timeout(
             neutralize_active_input,
-            ACTION_NEUTRALIZE_TIMEOUT_SECS,
             "neutralize",
+            ACTION_NEUTRALIZE_TIMEOUT_SECS,
         )
         if not ok_neutralize:
             _note_action_failure(now_monotonic)
 
         if args.sound:
-            ok_sound = _run_with_timeout(play_meow, ACTION_SOUND_TIMEOUT_SECS, "sound")
+            ok_sound = _run_with_timeout(play_meow, "sound", ACTION_SOUND_TIMEOUT_SECS)
             if not ok_sound:
                 _note_action_failure(now_monotonic)
 
         should_lock = should_lock_for_reason(args, reason, adaptive_medium_escalated)
         if should_lock and _lock_safety_allows(now_monotonic) and lock_circuit_allows(now_monotonic):
-            ok_lock = _run_with_timeout(lock_screen, ACTION_LOCK_TIMEOUT_SECS, "lock")
+            ok_lock = _run_with_timeout(lock_screen, "lock", ACTION_LOCK_TIMEOUT_SECS)
             if ok_lock:
                 _note_action_success()
                 return "locked"
